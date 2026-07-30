@@ -1,0 +1,31 @@
+Place 16 seamless PNG files in this folder, all at the same resolution.
+The exact required filenames are:
+
+sand-basecolor.png
+grass-basecolor.png
+soil-basecolor.png
+rock-basecolor.png
+
+sand-normal.png
+grass-normal.png
+soil-normal.png
+rock-normal.png
+
+sand-orm.png
+grass-orm.png
+soil-orm.png
+rock-orm.png
+
+sand-height.png
+grass-height.png
+soil-height.png
+rock-height.png
+
+Rules:
+- All images must have identical width and height (1024, 2048 or 4096 recommended).
+- Normal maps must use OpenGL orientation.
+- ORM channels: R=Ambient Occlusion, G=Roughness, B=Metallic.
+- Height maps are grayscale material-detail maps, not the world heightfield.
+- Layer order is always Sand, Grass, Soil, Rock.
+
+Then run BUILD_KTX2_ARRAYS_WINDOWS.bat from the project root.

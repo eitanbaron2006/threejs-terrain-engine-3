@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0b1115">
+    <meta name="description" content="Large-world WebGL2 terrain editor with full-world editor mode, dynamic FPS streaming, PBR materials and HDRI sky studio.">
+    <title>Terrain Engine 3.9.0 · Three.js</title>
+    <link rel="icon" href="./favicon.ico" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+    <link rel="stylesheet" href="./node_modules/litegraph.js/css/litegraph.css">
+    <link rel="stylesheet" href="./src/styles.css?v=3.11.6-graph-width-resizer-2">
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./node_modules/three/build/three.module.js",
+          "three/addons/": "./node_modules/three/examples/jsm/",
+          "fflate": "./node_modules/fflate/esm/browser.js",
+          "@comfyorg/fbx-exporter-three": "./node_modules/@comfyorg/fbx-exporter-three/dist/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="./node_modules/litegraph.js/build/litegraph.js"></script>
+    <script type="module" src="./src/main.js?v=graph-build-sync-1"></script>
+  </body>
+</html>

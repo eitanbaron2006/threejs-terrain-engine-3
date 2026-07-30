@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Terrain 4K PBR Array Set",
+  "resolution": 4096,
+  "layers": ["sand", "grass", "soil", "rock"],
+  "baseColorArray": "baseColor-array.ktx2",
+  "normalArray": "normal-array.ktx2",
+  "ormArray": "orm-array.ktx2",
+  "heightArray": "height-array.ktx2"
+}

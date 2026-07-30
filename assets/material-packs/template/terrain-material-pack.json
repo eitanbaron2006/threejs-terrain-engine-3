@@ -1,0 +1,14 @@
+{
+  "id": "my-ground-pack",
+  "name": "My Ground Pack",
+  "description": "Four-layer PBR terrain pack",
+  "splatPreset": "mediterranean",
+  "resolution": 2048,
+  "colors": ["#d8c28a", "#65864c", "#765139", "#777777"],
+  "layers": [
+    { "id": "sand", "label": "Sand", "baseColor": "sand/basecolor.png", "normal": "sand/normal.png", "orm": "sand/orm.png", "height": "sand/height.png" },
+    { "id": "grass", "label": "Grass", "baseColor": "grass/basecolor.png", "normal": "grass/normal.png", "orm": "grass/orm.png", "height": "grass/height.png" },
+    { "id": "soil", "label": "Soil", "baseColor": "soil/basecolor.png", "normal": "soil/normal.png", "orm": "soil/orm.png", "height": "soil/height.png" },
+    { "id": "rock", "label": "Rock", "baseColor": "rock/basecolor.png", "normal": "rock/normal.png", "orm": "rock/orm.png", "height": "rock/height.png" }
+  ]
+}

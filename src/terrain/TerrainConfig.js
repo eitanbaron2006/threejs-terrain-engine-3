@@ -1,0 +1,146 @@
+export const QUALITY_TIERS = Object.freeze({
+  low: Object.freeze({ label: 'LOW · 512', materialResolution: 512, pixelRatio: 1, anisotropy: 2, shadowSize: 1024 }),
+  medium: Object.freeze({ label: 'MEDIUM · 1K', materialResolution: 1024, pixelRatio: 1.25, anisotropy: 4, shadowSize: 1024 }),
+  high: Object.freeze({ label: 'HIGH · 2K', materialResolution: 2048, pixelRatio: 1.5, anisotropy: 8, shadowSize: 2048 }),
+  ultra: Object.freeze({ label: 'ULTRA · 4K', materialResolution: 4096, pixelRatio: 2, anisotropy: 16, shadowSize: 4096 }),
+});
+
+export const DEFAULT_TERRAIN_CONFIG = Object.freeze({
+  worldSizeKm: 8,
+  chunkSize: 256,
+  sourceResolution: 257,
+  controlResolution: 257,
+  minHeight: -48,
+  maxHeight: 220,
+  waterLevel: -3,
+  streamRadius: 4,
+  collisionRadius: 2,
+  maxLoadedChunks: 121,
+  generationBudgetPerFrame: 8,
+  editorDataResolution: 129,
+  editorLandLodIndex: 2,
+  editorOceanLodIndex: 3,
+  unloadDelayMs: 1800,
+  lodLevels: Object.freeze([
+    Object.freeze({ id: 0, segments: 256, dataResolution: 257, maxDistance: 420, displacement: 1, detail: 1 }),
+    Object.freeze({ id: 1, segments: 128, dataResolution: 129, maxDistance: 850, displacement: 0.65, detail: 1 }),
+    Object.freeze({ id: 2, segments: 64, dataResolution: 65, maxDistance: 1500, displacement: 0.2, detail: 1 }),
+    Object.freeze({ id: 3, segments: 32, dataResolution: 33, maxDistance: 2600, displacement: 0, detail: 1 }),
+    Object.freeze({ id: 4, segments: 16, dataResolution: 17, maxDistance: Infinity, displacement: 0, detail: 1 }),
+  ]),
+  lodHysteresis: 55,
+  textureWorldScale: 0.065,
+  macroWorldScale: 0.0018,
+  maxSlopeDegrees: 55,
+});
+
+export const DEFAULT_GENERATOR_SETTINGS = Object.freeze({
+  seed: 1337,
+  baseHeight: 8,
+  amplitude: 82,
+  frequency: 0.00185,
+  octaves: 6,
+  persistence: 0.51,
+  lacunarity: 2.04,
+  ridgeStrength: 0.52,
+  warpStrength: 92,
+  islandFalloff: 0,
+  landRadius: 3050,
+  coastWidth: 720,
+  coastIrregularity: 0.18,
+  oceanDepth: 52,
+  continentalScale: 0.00034,
+  continentalStrength: 64,
+  terraceStrength: 0.06,
+});
+
+export const DEFAULT_BRUSH_SETTINGS = Object.freeze({
+  tool: 'raise',
+  radius: 24,
+  strength: 0.9,
+  hardness: 0.5,
+  materialLayer: 1,
+});
+
+export const DEFAULT_MATERIAL_SETTINGS = Object.freeze({
+  qualityTier: 'high',
+  displacementEnabled: false,
+  displacementMode: 'normal',
+  displacementWeightThreshold: 0.08,
+  displacementNear: 0,
+  displacementFar: 420,
+  displacementPreviewEnabled: true,
+  displacementPreviewRadius: 1,
+  parallaxEnabled: true,
+  parallaxScale: 0.025,
+  heightBlendSharpness: 0.22,
+  macroVariation: 0.12,
+  detailNormalStrength: 0.38,
+  layers: Object.freeze([
+    Object.freeze({ id: 'sand', label: 'חול / חוף', strength: 0.08, displacementEnabled: false, displacementCenter: 0.5, scale: 0.095, roughness: 0.88, metalness: 0 }),
+    Object.freeze({ id: 'grass', label: 'דשא', strength: 0.06, displacementEnabled: false, displacementCenter: 0.5, scale: 0.13, roughness: 0.92, metalness: 0 }),
+    Object.freeze({ id: 'soil', label: 'אדמה', strength: 0.14, displacementEnabled: false, displacementCenter: 0.5, scale: 0.11, roughness: 0.83, metalness: 0 }),
+    Object.freeze({ id: 'rock', label: 'סלע', strength: 0.45, displacementEnabled: true, displacementCenter: 0.48, scale: 0.072, roughness: 0.74, metalness: 0.02 }),
+  ]),
+});
+
+export const DEFAULT_STREAMING_SETTINGS = Object.freeze({
+  enabled: true,
+  followTarget: 'camera',
+  streamRadius: 4,
+  collisionRadius: 2,
+  showChunkBounds: false,
+  freezeStreaming: false,
+});
+
+
+export const DEFAULT_WATER_SETTINGS = Object.freeze({
+  oceanRadius: 17000,
+  simulationResolution: 256,
+  simulationWorldSize: 420,
+  waveAmplitude: 0.34,
+  rippleAmplitude: 1.6,
+  normalStrength: 2.8,
+  refractionStrength: 0.018,
+  refractionResolutionScale: 0.72,
+  shoreFade: 1.65,
+  foamStrength: 0.32,
+  opacity: 0.97,
+  horizonCurvature: 0,
+  dynamicRipples: true,
+  shallowColor: '#2faaa3',
+  deepColor: '#07385f',
+});
+
+export const DEFAULT_FPS_SETTINGS = Object.freeze({
+  eyeHeight: 1.72,
+  walkSpeed: 9,
+  runSpeed: 17,
+  jumpSpeed: 8.8,
+  gravity: 25,
+  maxStepHeight: 1.0,
+  maxSlopeDegrees: 52,
+  mouseSensitivity: 0.0022,
+});
+
+export function cloneMaterialSettings(settings = DEFAULT_MATERIAL_SETTINGS) {
+  return {
+    qualityTier: settings.qualityTier ?? DEFAULT_MATERIAL_SETTINGS.qualityTier,
+    displacementEnabled: settings.displacementEnabled ?? DEFAULT_MATERIAL_SETTINGS.displacementEnabled,
+    displacementMode: settings.displacementMode === 'vertical' ? 'vertical' : 'normal',
+    displacementWeightThreshold: Number(settings.displacementWeightThreshold ?? DEFAULT_MATERIAL_SETTINGS.displacementWeightThreshold),
+    displacementPreviewEnabled: settings.displacementPreviewEnabled ?? DEFAULT_MATERIAL_SETTINGS.displacementPreviewEnabled,
+    displacementPreviewRadius: Number(settings.displacementPreviewRadius ?? DEFAULT_MATERIAL_SETTINGS.displacementPreviewRadius),
+    parallaxEnabled: settings.parallaxEnabled ?? DEFAULT_MATERIAL_SETTINGS.parallaxEnabled,
+    parallaxScale: Number(settings.parallaxScale ?? DEFAULT_MATERIAL_SETTINGS.parallaxScale),
+    displacementNear: Number(settings.displacementNear ?? DEFAULT_MATERIAL_SETTINGS.displacementNear),
+    displacementFar: Number(settings.displacementFar ?? DEFAULT_MATERIAL_SETTINGS.displacementFar),
+    heightBlendSharpness: Number(settings.heightBlendSharpness ?? DEFAULT_MATERIAL_SETTINGS.heightBlendSharpness),
+    macroVariation: Number(settings.macroVariation ?? DEFAULT_MATERIAL_SETTINGS.macroVariation),
+    detailNormalStrength: Number(settings.detailNormalStrength ?? DEFAULT_MATERIAL_SETTINGS.detailNormalStrength),
+    layers: DEFAULT_MATERIAL_SETTINGS.layers.map((fallback, index) => ({
+      ...fallback,
+      ...(settings.layers?.[index] ?? {}),
+    })),
+  };
+}
