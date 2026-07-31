@@ -55,12 +55,13 @@ function createPlantMaterial(color, timeUniform) {
   const baseColor = new THREE.Color(color);
   const material = new THREE.MeshStandardMaterial({
     color: '#ffffff',
-    roughness: 0.82,
+    roughness: 0.9,
     metalness: 0,
+    envMapIntensity: 0.08,
     emissive: baseColor.clone().multiplyScalar(0.08),
     emissiveIntensity: 0.22,
     side: THREE.DoubleSide,
-    vertexColors: true,
+    vertexColors: false,
   });
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uAquaticTime = timeUniform;
@@ -82,21 +83,36 @@ function createPlantMaterial(color, timeUniform) {
         transformed.z += cos(uAquaticTime * 0.57 + aquaticPhase * 1.31 + aquaticHeight * 0.24)
           * aquaticHeight * 0.032;
       `);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       totalEmissiveRadiance += diffuseColor.rgb * 0.14;`,
+    );
   };
-  material.customProgramCacheKey = () => 'aquatic-current-v1';
+  material.customProgramCacheKey = () => 'aquatic-current-color-v2';
   return material;
 }
 
 function createReefMaterial(color, roughness = 0.74) {
   const baseColor = new THREE.Color(color);
-  return new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshStandardMaterial({
     color: '#ffffff',
-    roughness,
+    roughness: Math.max(0.86, roughness),
     metalness: 0,
+    envMapIntensity: 0.08,
     emissive: baseColor.clone().multiplyScalar(0.07),
     emissiveIntensity: 0.18,
-    vertexColors: true,
+    vertexColors: false,
   });
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       totalEmissiveRadiance += diffuseColor.rgb * 0.11;`,
+    );
+  };
+  material.customProgramCacheKey = () => 'aquatic-reef-color-v2';
+  return material;
 }
 
 function createTaperedBranch(start, end, baseRadius, tipRadius) {

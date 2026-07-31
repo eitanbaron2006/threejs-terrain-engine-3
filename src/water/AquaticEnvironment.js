@@ -122,6 +122,19 @@ function paletteFor(item) {
   return ['#68766e', '#7c8178', '#596860'];
 }
 
+function configureUnderwaterInstanceMaterial(material, colorFill = 0.12) {
+  material.envMapIntensity = 0.08;
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       totalEmissiveRadiance += diffuseColor.rgb * ${colorFill.toFixed(3)};`,
+    );
+  };
+  material.customProgramCacheKey = () => `aquatic-instance-color-v2-${colorFill}`;
+  return material;
+}
+
 export class AquaticEnvironment {
   constructor({
     scene,
@@ -226,12 +239,14 @@ export class AquaticEnvironment {
       object.traverse((child) => {
         if (!child.isMesh) return;
         child.castShadow = false;
-        child.receiveShadow = true;
+        child.receiveShadow = false;
         child.frustumCulled = true;
         if (child.material?.clone) {
           child.material = child.material.clone();
-          if ('roughness' in child.material) child.material.roughness = 0.56;
+          if ('roughness' in child.material) child.material.roughness = 0.76;
           if ('metalness' in child.material) child.material.metalness = 0;
+          if ('envMapIntensity' in child.material) child.material.envMapIntensity = 0.08;
+          if ('clearcoat' in child.material) child.material.clearcoat = 0.02;
           if (child.material.color) {
             child.material.color.lerp(new THREE.Color(entry.tint), 0.34);
           }
@@ -274,23 +289,24 @@ export class AquaticEnvironment {
     const random = createRandom(this.spatialModel.seed + 2203 + zones.length * 97);
     const bodyGeometry = new THREE.SphereGeometry(1, 14, 9);
     const tailGeometry = createFishTailGeometry();
-    const bodyMaterial = new THREE.MeshPhysicalMaterial({
+    const bodyMaterial = configureUnderwaterInstanceMaterial(new THREE.MeshPhysicalMaterial({
       color: '#ffffff',
       emissive: '#152d2c',
       emissiveIntensity: 0.28,
-      roughness: 0.5,
+      roughness: 0.72,
       metalness: 0,
-      clearcoat: 0.08,
-      vertexColors: true,
-    });
-    const tailMaterial = new THREE.MeshStandardMaterial({
+      clearcoat: 0.02,
+      vertexColors: false,
+    }), 0.14);
+    const tailMaterial = configureUnderwaterInstanceMaterial(new THREE.MeshStandardMaterial({
       color: '#ffffff',
       emissive: '#102524',
       emissiveIntensity: 0.24,
-      roughness: 0.58,
-      vertexColors: true,
+      roughness: 0.78,
+      metalness: 0,
+      vertexColors: false,
       side: THREE.DoubleSide,
-    });
+    }), 0.12);
     this.fishBodyMesh = this.#registerBatch(
       new THREE.InstancedMesh(bodyGeometry, bodyMaterial, requested),
       true,
@@ -374,8 +390,8 @@ export class AquaticEnvironment {
         count,
       ));
       mesh.name = `AquaticHabitat:${item.id}`;
-      mesh.castShadow = item.id.includes('coral') || item.id.includes('rock');
-      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
       const palette = paletteFor(item);
 
       for (let index = 0; index < count; index += 1) {

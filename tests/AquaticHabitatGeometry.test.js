@@ -20,8 +20,11 @@ test('habitat geometry kit uses physically lit double-sided plant materials', ()
 
   assert.equal(plant.material.isMeshStandardMaterial, true);
   assert.equal(plant.material.side, 2);
+  assert.equal(plant.geometry.attributes.color, undefined);
+  assert.equal(plant.material.vertexColors, false);
   assert.ok(plant.geometry.attributes.position.count > 4);
   assert.equal(typeof plant.material.onBeforeCompile, 'function');
+  assert.ok(plant.material.envMapIntensity <= 0.15);
 
   kit.update(3.5);
   assert.equal(kit.plantTimeUniform.value, 3.5);
@@ -37,6 +40,11 @@ test('procedural coral and sponge morphologies are clustered organic meshes', ()
   assert.ok(massive.geometry.attributes.position.count > 250);
   assert.ok(barrel.geometry.attributes.position.count > 300);
   assert.equal(massive.material.color.getHex(), 0xffffff);
+  assert.equal(massive.geometry.attributes.color, undefined);
+  assert.equal(massive.material.vertexColors, false);
+  assert.ok(massive.material.roughness >= 0.84);
+  assert.ok(massive.material.envMapIntensity <= 0.15);
+  assert.equal(typeof massive.material.onBeforeCompile, 'function');
 
   kit.dispose();
 });

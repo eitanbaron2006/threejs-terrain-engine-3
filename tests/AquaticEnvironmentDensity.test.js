@@ -64,3 +64,27 @@ test('rebuilding for a dry world clears stale fish and vegetation batches', () =
   assert.equal(environment.getDiagnostics().vegetation, 0);
   environment.dispose();
 });
+
+test('underwater habitat instances do not receive opaque terrain shadow maps', () => {
+  const environment = createEnvironment();
+  const habitatMeshes = environment.batchMeshes.filter((mesh) => mesh.name.startsWith('AquaticHabitat:'));
+
+  assert.ok(habitatMeshes.length > 0);
+  assert.ok(habitatMeshes.every((mesh) => mesh.castShadow === false));
+  assert.ok(habitatMeshes.every((mesh) => mesh.receiveShadow === false));
+  environment.dispose();
+});
+
+test('school fish use diffuse underwater lighting instead of metallic HDRI shading', () => {
+  const environment = createEnvironment();
+  const fish = environment.batchMeshes.find((mesh) => mesh.name === 'AquaticSchoolFishBodies');
+
+  assert.ok(fish);
+  assert.equal(fish.geometry.attributes.color, undefined);
+  assert.equal(fish.material.vertexColors, false);
+  assert.equal(fish.material.metalness, 0);
+  assert.ok(fish.material.roughness >= 0.68);
+  assert.ok(fish.material.envMapIntensity <= 0.15);
+  assert.equal(typeof fish.material.onBeforeCompile, 'function');
+  environment.dispose();
+});
