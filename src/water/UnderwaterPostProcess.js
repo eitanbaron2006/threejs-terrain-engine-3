@@ -20,8 +20,6 @@ export function updateUnderwaterState(previous, cameraY, surfaceY, {
 const vertexShader = /* glsl */ `
   precision highp float;
 
-  in vec3 position;
-  in vec2 uv;
   out vec2 vUv;
 
   void main() {
@@ -35,6 +33,7 @@ const fragmentShader = /* glsl */ `
   precision highp sampler2D;
 
   layout(location = 0) out highp vec4 underwaterFragmentColor;
+  #define gl_FragColor underwaterFragmentColor
 
   uniform sampler2D uSceneColor;
   uniform sampler2D uSceneDepth;
@@ -84,8 +83,8 @@ const fragmentShader = /* glsl */ `
     vec3 transmittance = exp(-absorption * min(viewDistance, 180.0));
     float scatterAmount = 1.0 - exp(-viewDistance * 0.018 * density);
     float deepMix = smoothstep(3.0, 34.0, cameraDepth);
-    vec3 volumeColor = mix(uShallowColor * 0.82, uDeepColor * 0.72, deepMix);
-    vec3 color = sourceColor * transmittance + volumeColor * scatterAmount * (1.0 - transmittance * 0.28);
+    vec3 volumeColor = mix(uShallowColor * 0.38, uDeepColor * 0.68, deepMix);
+    vec3 color = sourceColor * transmittance + volumeColor * scatterAmount * (0.86 - transmittance * 0.18);
 
     if (depth < 0.99999 && worldPosition.y < uWaterLevel) {
       vec3 normal = normalize(cross(dFdx(worldPosition), dFdy(worldPosition)));
@@ -95,7 +94,7 @@ const fragmentShader = /* glsl */ `
       float depthFade = exp(-objectDepth * 0.052 * density);
       float caustic = causticPattern(worldPosition.xz, uTime);
       caustic += causticPattern(worldPosition.xz * 1.73 + 17.0, uTime * 0.83) * 0.38;
-      color += uSunColor * caustic * floorFacing * depthFade * 0.42;
+      color += uSunColor * caustic * floorFacing * depthFade * 0.14;
     }
 
     float shaftAlignment = pow(max(dot(viewDirection, normalize(uSunDirection)), 0.0), 20.0);

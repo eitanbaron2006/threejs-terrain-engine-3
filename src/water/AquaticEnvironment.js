@@ -19,14 +19,26 @@ function disposeMesh(mesh) {
 }
 
 function createBladeGeometry() {
-  const geometry = new THREE.PlaneGeometry(0.72, 4.8, 1, 5);
-  geometry.translate(0, 2.4, 0);
+  const geometry = new THREE.PlaneGeometry(0.3, 3.2, 1, 5);
+  geometry.translate(0, 1.6, 0);
   const positions = geometry.attributes.position;
   for (let index = 0; index < positions.count; index += 1) {
     const y = positions.getY(index);
-    positions.setX(index, positions.getX(index) + Math.pow(y / 4.8, 2) * 0.65);
+    positions.setX(index, positions.getX(index) + Math.pow(y / 3.2, 2) * 0.38);
   }
   positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createFishTailGeometry() {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+    0, 0, 0,
+    -1.15, 0.78, 0,
+    -1.15, -0.78, 0,
+  ], 3));
+  geometry.setIndex([0, 1, 2]);
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -77,13 +89,12 @@ export class AquaticEnvironment {
     if (!requested || !this.layout.fishSchools.length) return;
     const random = createRandom(this.spatialModel.seed + 2203);
     const bodyGeometry = new THREE.SphereGeometry(1, 14, 9);
-    const tailGeometry = new THREE.ConeGeometry(0.72, 1.25, 3);
-    tailGeometry.rotateZ(Math.PI / 2);
+    const tailGeometry = createFishTailGeometry();
     const bodyMaterial = new THREE.MeshPhysicalMaterial({
       color: '#79a9a0',
-      roughness: 0.34,
-      metalness: 0.08,
-      clearcoat: 0.2,
+      roughness: 0.52,
+      metalness: 0.02,
+      clearcoat: 0.12,
       vertexColors: true,
     });
     const tailMaterial = new THREE.MeshStandardMaterial({
@@ -109,7 +120,7 @@ export class AquaticEnvironment {
         verticalOffset: (random() - 0.5) * Math.min(5, school.depth * 0.22),
         speed: school.speed * (0.74 + random() * 0.52),
         phase: random() * Math.PI * 2,
-        scale: 0.72 + random() * 0.72,
+        scale: 0.46 + random() * 0.38,
       };
       this.fishRecords.push(record);
       const color = new THREE.Color(fishColors[Math.floor(random() * fishColors.length)]);
@@ -130,6 +141,8 @@ export class AquaticEnvironment {
       color: '#2f6d51',
       roughness: 0.82,
       metalness: 0,
+      emissive: '#123c2c',
+      emissiveIntensity: 0.18,
       side: THREE.DoubleSide,
       vertexColors: true,
     });
@@ -168,6 +181,8 @@ export class AquaticEnvironment {
       color: '#ad6f62',
       roughness: 0.68,
       metalness: 0,
+      emissive: '#3d171b',
+      emissiveIntensity: 0.12,
       vertexColors: true,
     });
     const branchMesh = this.#addMesh(new THREE.InstancedMesh(branchGeometry, coralMaterial, branchCount));
@@ -252,7 +267,7 @@ export class AquaticEnvironment {
       const backwardX = Math.cos(yaw + Math.PI) * 1.25 * fish.scale;
       const backwardZ = -Math.sin(yaw + Math.PI) * 1.25 * fish.scale;
       this.dummy.position.set(x + backwardX, y, z + backwardZ);
-      this.dummy.rotation.set(0, yaw + swim * 0.2, Math.PI / 2);
+      this.dummy.rotation.set(0, yaw + swim * 0.24, 0);
       this.dummy.scale.setScalar(fish.scale);
       this.dummy.updateMatrix();
       this.fishTailMesh.setMatrixAt(index, this.dummy.matrix);

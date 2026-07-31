@@ -420,6 +420,7 @@ export class TerrainEditorApp {
       this.waterSystem.applySettings(this.waterSettings);
       this.#resize();
     });
+    this.ui.on('floating-demo-view', () => this.#focusWaterDemo('floating'));
     this.ui.on('underwater-demo-view', () => this.#focusUnderwaterDemo());
     this.ui.on('quality-change', async (qualityTier) => {
       try {
@@ -707,11 +708,19 @@ export class TerrainEditorApp {
   }
 
   #focusUnderwaterDemo() {
+    this.#focusWaterDemo('underwater');
+  }
+
+  #focusWaterDemo(mode) {
     if (this.fpsActive) this.#exitFpsMode();
     this.#cancelSpawnSelection();
-    const view = this.waterSystem.getUnderwaterDemoView();
+    const view = mode === 'floating'
+      ? this.waterSystem.getFloatingDemoView()
+      : this.waterSystem.getUnderwaterDemoView();
     if (!view) {
-      this.ui.toast('לא נמצא בית גידול תת־ימי בעולם הנוכחי.', 'error');
+      this.ui.toast(mode === 'floating'
+        ? 'לא נמצאו כדורי ציפה בעולם הנוכחי.'
+        : 'לא נמצא בית גידול תת־ימי בעולם הנוכחי.', 'error');
       return;
     }
     this.camera.position.set(view.position.x, view.position.y, view.position.z);
@@ -719,7 +728,9 @@ export class TerrainEditorApp {
     this.controls.enabled = true;
     this.controls.update();
     this.world.updateStreaming(this.controls.target, true);
-    this.ui.toast('המצלמה הועברה לסביבת ההדגמה התת־ימית.');
+    this.ui.toast(mode === 'floating'
+      ? 'המצלמה הועברה לכדורי בדיקת הציפה.'
+      : 'המצלמה הועברה לסביבת ההדגמה התת־ימית.');
   }
 
   #setSpawnPoint(point, message = null) {

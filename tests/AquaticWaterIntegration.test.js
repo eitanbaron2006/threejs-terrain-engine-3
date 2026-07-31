@@ -36,7 +36,9 @@ test('editor exposes aquatic controls, a demo view, and FPS diving controls', as
   assert.match(uiSource, /water-floating-spheres/);
   assert.match(uiSource, /water-aquatic-life/);
   assert.match(uiSource, /water-underwater-optics/);
+  assert.match(uiSource, /floating-demo-view/);
   assert.match(uiSource, /underwater-demo-view/);
+  assert.match(appSource, /getFloatingDemoView/);
   assert.match(appSource, /getUnderwaterDemoView/);
   assert.match(fpsSource, /ControlLeft/);
   assert.match(fpsSource, /swimming/);

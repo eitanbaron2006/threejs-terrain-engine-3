@@ -158,6 +158,7 @@ export class EditorUI {
                 ${this.#range('water-coral-count', 'כמות אלמוגים', this.waterSettings.coralCount, 0, 24, 1)}
                 <label class="toggle"><input id="water-underwater-optics" type="checkbox" ${this.waterSettings.underwaterOpticsEnabled ? 'checked' : ''}><span>אופטיקה תת־ימית</span></label>
                 ${this.#range('water-optical-density', 'צפיפות אופטית במים', this.waterSettings.underwaterOpticalDensity, 0.45, 1.8, 0.05)}
+                <button class="secondary full" data-action="floating-demo-view">מעבר לכדורי בדיקת הציפה</button>
                 <button class="secondary full" data-action="underwater-demo-view">מעבר לסביבת ההדגמה התת־ימית</button>
                 <p class="hint">המים משתמשים ב־ping-pong Render Targets, Fresnel, שבירה, עומק, קצף ו־shore fade. אותו משטח ממלא את הים והאגמים שמתחת לגובה המים.</p>
               </div>
@@ -502,6 +503,7 @@ export class EditorUI {
         this.emit('water-settings', this.getWaterSettings());
       });
     }
+    this.root.querySelector('[data-action="floating-demo-view"]').addEventListener('click', () => this.emit('floating-demo-view'));
     this.root.querySelector('[data-action="underwater-demo-view"]').addEventListener('click', () => this.emit('underwater-demo-view'));
     this.root.querySelector('#material-layer').addEventListener('change', (event) => { this.brushSettings.materialLayer = Number(event.target.value); });
     this.root.querySelector('#wireframe').addEventListener('change', (event) => this.emit('wireframe', event.target.checked));

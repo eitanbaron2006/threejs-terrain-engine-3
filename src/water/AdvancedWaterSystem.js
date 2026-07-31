@@ -634,9 +634,11 @@ export class AdvancedWaterSystem {
 
     this.renderer.shadowMap.autoUpdate = false;
     if (this.underwaterPost.active) {
+      this.mesh.visible = false;
       this.renderer.setRenderTarget(this.underwaterPost.target);
       this.renderer.clear(true, true, false);
       this.renderer.render(scene, camera);
+      this.mesh.visible = true;
       this.underwaterPost.render(previousTarget);
     } else {
       this.renderer.setRenderTarget(previousTarget);
@@ -660,6 +662,10 @@ export class AdvancedWaterSystem {
 
   getUnderwaterDemoView() {
     return this.aquaticEnvironment.getDemoView();
+  }
+
+  getFloatingDemoView() {
+    return this.interactions.getDemoView();
   }
 
   getSurfaceHeight(x, z) {

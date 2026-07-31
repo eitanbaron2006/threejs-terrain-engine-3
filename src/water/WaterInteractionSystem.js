@@ -141,6 +141,24 @@ export class WaterInteractionSystem {
     return this.bodies.length;
   }
 
+  getDemoView() {
+    const body = this.bodies[0];
+    if (!body) return null;
+    const surfaceY = this.spatialModel.waterLevel;
+    return {
+      position: {
+        x: body.position.x + 24,
+        y: surfaceY + 10,
+        z: body.position.z + 26,
+      },
+      target: {
+        x: body.position.x,
+        y: surfaceY,
+        z: body.position.z,
+      },
+    };
+  }
+
   dispose() {
     this.scene.remove(this.group);
     disposeObject(this.group);
