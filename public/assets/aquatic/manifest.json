@@ -1,0 +1,47 @@
+{
+  "source": "Quaternius Animated Fish Pack",
+  "sourceUrl": "https://quaternius.com/packs/animatedfish.html",
+  "license": "CC0-1.0",
+  "species": [
+    {
+      "id": "reef-fish-a",
+      "url": "/assets/aquatic/fish/fish-1.fbx",
+      "license": "CC0-1.0",
+      "scale": 0.004,
+      "swimClip": "Armature|Swim",
+      "habitats": ["reef", "grass-bed"]
+    },
+    {
+      "id": "reef-fish-b",
+      "url": "/assets/aquatic/fish/fish-2.fbx",
+      "license": "CC0-1.0",
+      "scale": 0.0034,
+      "swimClip": "Armature|Swim.001",
+      "habitats": ["reef"]
+    },
+    {
+      "id": "reef-fish-c",
+      "url": "/assets/aquatic/fish/fish-3.fbx",
+      "license": "CC0-1.0",
+      "scale": 0.0042,
+      "swimClip": "Armature|Swim",
+      "habitats": ["reef", "grass-bed"]
+    },
+    {
+      "id": "manta",
+      "url": "/assets/aquatic/fish/manta-ray.fbx",
+      "license": "CC0-1.0",
+      "scale": 0.0045,
+      "swimClip": "Armature|Swim",
+      "habitats": ["deep-school"]
+    },
+    {
+      "id": "shark",
+      "url": "/assets/aquatic/fish/shark.fbx",
+      "license": "CC0-1.0",
+      "scale": 0.0035,
+      "swimClip": "Armature|Swim",
+      "habitats": ["deep-school", "reef"]
+    }
+  ]
+}

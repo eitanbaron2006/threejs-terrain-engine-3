@@ -26,6 +26,7 @@ import {
   serializeTerrainMesh,
 } from '../terrain/TerrainModelExporter.js';
 import { FpsPlayerController } from '../player/FpsPlayerController.js';
+import { FpsProjectileSystem } from '../player/FpsProjectileSystem.js';
 import { AdvancedWaterSystem } from '../water/AdvancedWaterSystem.js';
 import { WorldEnvironment } from '../environment/WorldEnvironment.js';
 import { getEnvironmentPreset } from '../environment/EnvironmentPresets.js';
@@ -286,11 +287,19 @@ export class TerrainEditorApp {
   }
 
   #createPlayer() {
+    this.projectileSystem = new FpsProjectileSystem({
+      scene: this.scene,
+      camera: this.camera,
+      world: this.world,
+      waterSystem: this.waterSystem,
+      settings: this.waterSettings,
+    });
     this.fpsController = new FpsPlayerController({
       canvas: this.renderer.domElement,
       camera: this.camera,
       world: this.world,
       waterSystem: this.waterSystem,
+      projectileSystem: this.projectileSystem,
       eventBus: this.eventBus,
       settings: DEFAULT_FPS_SETTINGS,
     });
@@ -418,7 +427,12 @@ export class TerrainEditorApp {
     this.ui.on('water-settings', (settings) => {
       Object.assign(this.waterSettings, settings);
       this.waterSystem.applySettings(this.waterSettings);
+      this.projectileSystem.applySettings(this.waterSettings);
       this.#resize();
+    });
+    this.ui.on('reset-floating-objects', () => {
+      this.projectileSystem.clear();
+      this.waterSystem.resetFloatingObjects();
     });
     this.ui.on('floating-demo-view', () => this.#focusWaterDemo('floating'));
     this.ui.on('underwater-demo-view', () => this.#focusUnderwaterDemo());
@@ -668,6 +682,8 @@ export class TerrainEditorApp {
 
   #bindKeyboard() {
     this.onKeyDown = (event) => {
+      const target = event.target;
+      if (target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? '')) return;
       if (this.fpsActive) return;
       const modifier = event.ctrlKey || event.metaKey;
       if (modifier && event.key.toLowerCase() === 'z') {
@@ -677,6 +693,7 @@ export class TerrainEditorApp {
         event.preventDefault();
         this.#redo();
       } else if (event.key.toLowerCase() === 'f') this.#resetCamera();
+      else if (event.key.toLowerCase() === 'c') this.#focusUnderwaterDemo();
       else if (event.key === 'Escape') this.#cancelSpawnSelection();
     };
     window.addEventListener('keydown', this.onKeyDown);
@@ -819,6 +836,7 @@ export class TerrainEditorApp {
     if (!this.fpsActive) return;
     this.fpsActive = false;
     this.fpsController.stop();
+    this.projectileSystem.clear();
     this.ui.setFpsMode(false);
     this.spawnMarker.visible = true;
     this.brushController.setEnabled(true);
@@ -980,6 +998,7 @@ export class TerrainEditorApp {
       if (result.waterSettings) {
         Object.assign(this.waterSettings, result.waterSettings);
         this.waterSystem.applySettings(this.waterSettings);
+        this.projectileSystem.applySettings(this.waterSettings);
         this.ui.syncWaterSettings(this.waterSettings);
       }
       if (result.environmentSettings) {
@@ -1022,6 +1041,7 @@ export class TerrainEditorApp {
     this.elapsed += delta;
     if (this.fpsActive) this.fpsController.update(delta);
     else this.controls.update();
+    this.projectileSystem.update(delta);
 
     const streamingTarget = this.fpsActive ? this.fpsController.position : this.controls.target;
     this.world.updateStreaming(streamingTarget);
@@ -1063,6 +1083,7 @@ export class TerrainEditorApp {
     this.resizeObserver?.disconnect();
     window.removeEventListener('keydown', this.onKeyDown);
     this.fpsController?.dispose();
+    this.projectileSystem?.dispose();
     this.brushController?.dispose();
     this.world?.dispose();
     this.generationService?.dispose();

@@ -9,6 +9,7 @@ export class FpsPlayerController {
     camera,
     world,
     waterSystem = null,
+    projectileSystem = null,
     eventBus,
     settings = DEFAULT_FPS_SETTINGS,
   }) {
@@ -16,6 +17,7 @@ export class FpsPlayerController {
     this.camera = camera;
     this.world = world;
     this.waterSystem = waterSystem;
+    this.projectileSystem = projectileSystem;
     this.eventBus = eventBus;
     this.settings = { ...DEFAULT_FPS_SETTINGS, ...settings };
     this.position = new THREE.Vector3();
@@ -35,15 +37,23 @@ export class FpsPlayerController {
     this.onKeyDown = (event) => this.#handleKeyDown(event);
     this.onKeyUp = (event) => this.#handleKeyUp(event);
     this.onPointerLockChange = () => this.#handlePointerLockChange();
-    this.onCanvasClick = () => {
-      if (this.enabled && document.pointerLockElement !== this.canvas) this.canvas.requestPointerLock?.();
+    this.onCanvasPointerDown = (event) => {
+      if (!this.enabled || event.button !== 0) return;
+      if (document.pointerLockElement !== this.canvas) {
+        this.canvas.requestPointerLock?.();
+        return;
+      }
+      this.projectileSystem?.fire({
+        fpsEnabled: this.enabled,
+        pointerLocked: true,
+      });
     };
 
     document.addEventListener('mousemove', this.onMouseMove);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
-    this.canvas.addEventListener('click', this.onCanvasClick);
+    this.canvas.addEventListener('pointerdown', this.onCanvasPointerDown);
   }
 
   start(spawnPoint) {
@@ -238,6 +248,6 @@ export class FpsPlayerController {
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
-    this.canvas.removeEventListener('click', this.onCanvasClick);
+    this.canvas.removeEventListener('pointerdown', this.onCanvasPointerDown);
   }
 }

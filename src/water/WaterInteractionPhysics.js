@@ -13,6 +13,34 @@ export function sphereSubmergedFraction(centerY, radius, surfaceY) {
   return capVolume / sphereVolume;
 }
 
+export function sphereSimulationMass(radius, density) {
+  const safeRadius = Math.max(0.01, finite(radius, 1));
+  const safeDensity = Math.max(0.05, finite(density, 0.65));
+  const volume = 4 / 3 * Math.PI * safeRadius ** 3;
+  return volume * safeDensity * 2;
+}
+
+export function applySphereImpact(body, impact = {}) {
+  const projectileMass = Math.max(0.001, finite(impact.projectileMass, 1));
+  const bodyMass = Math.max(0.001, finite(body.mass, 1));
+  const restitution = Math.min(Math.max(finite(impact.restitution, 0.25), 0), 1);
+  const normalSpeed = impact.relativeVelocity.dot(impact.normal);
+  if (normalSpeed >= 0) return 0;
+
+  const impulseMagnitude = -(1 + restitution) * normalSpeed
+    / (1 / projectileMass + 1 / bodyMass);
+  const targetImpulse = impact.normal.clone().multiplyScalar(-impulseMagnitude);
+  body.velocity.addScaledVector(targetImpulse, 1 / bodyMass);
+
+  if (body.angularVelocity && impact.contactOffset) {
+    const angularImpulse = impact.contactOffset.clone().cross(targetImpulse);
+    const radius = Math.max(0.01, finite(body.radius, 1));
+    const inertia = 2 / 5 * bodyMass * radius * radius;
+    body.angularVelocity.addScaledVector(angularImpulse, 1 / inertia);
+  }
+  return impulseMagnitude;
+}
+
 export function integrateBuoyantBody(body, environment = {}, deltaSeconds = 0) {
   const delta = Math.min(Math.max(finite(deltaSeconds, 0), 0), 0.05);
   const radius = Math.max(0.01, finite(body.radius, 1));

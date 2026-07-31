@@ -2,6 +2,10 @@ function finite(value, fallback) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
 function createRandom(seed) {
   let state = (Math.trunc(finite(seed, 1)) >>> 0) || 1;
   return () => {
@@ -24,11 +28,85 @@ function enrichPositions(positions, random, type) {
   }));
 }
 
+function classifyHabitat(depth) {
+  if (depth >= 30) return 'deep-school';
+  if (depth <= 11) return 'grass-bed';
+  return 'reef';
+}
+
+function createHabitatZones(spatialModel, options, random) {
+  const habitatDensity = clamp(finite(options.habitatDensity, 1), 0.25, 2);
+  const margin = Math.min(220, spatialModel.worldSize * 0.045);
+  const extent = Math.max(1, spatialModel.worldSize * 0.5 - margin);
+  const usableSize = extent * 2;
+  const targetCellSize = 220 / Math.sqrt(habitatDensity);
+  const cellsPerAxis = Math.max(1, Math.ceil(usableSize / targetCellSize));
+  const cellSize = usableSize / cellsPerAxis;
+  const positions = [];
+
+  for (let zIndex = 0; zIndex < cellsPerAxis; zIndex += 1) {
+    for (let xIndex = 0; xIndex < cellsPerAxis; xIndex += 1) {
+      const centerX = -extent + (xIndex + 0.5) * cellSize;
+      const centerZ = -extent + (zIndex + 0.5) * cellSize;
+      const jitterX = (random() - 0.5) * cellSize * 0.5;
+      const jitterZ = (random() - 0.5) * cellSize * 0.5;
+      const candidates = [
+        [centerX + jitterX, centerZ + jitterZ],
+        [centerX, centerZ],
+        [centerX + cellSize * 0.24, centerZ - cellSize * 0.2],
+        [centerX - cellSize * 0.22, centerZ + cellSize * 0.24],
+      ];
+      const position = candidates.map(([x, z]) => {
+        const floorY = spatialModel.sampleFloor(x, z);
+        return { x, z, floorY, depth: Math.max(0, spatialModel.waterLevel - floorY) };
+      }).find((candidate) => candidate.depth >= 3 && candidate.depth <= 180);
+      if (position) positions.push(position);
+    }
+  }
+
+  return positions.map((position, index) => {
+    const habitatClass = classifyHabitat(position.depth);
+    const reef = habitatClass === 'reef';
+    const grassBed = habitatClass === 'grass-bed';
+    return {
+      ...position,
+      id: `aquatic-zone-${index}`,
+      seed: spatialModel.seed + index * 7919 + 89,
+      habitatClass,
+      radius: (reef ? 0.45 : grassBed ? 0.42 : 0.48) * cellSize * (0.86 + random() * 0.22),
+      fishTarget: reef ? 48 : grassBed ? 34 : 42,
+      vegetationTarget: reef ? 260 : grassBed ? 320 : 30,
+      heading: random() * Math.PI * 2,
+      density: 0.82 + random() * 0.36,
+    };
+  });
+}
+
+function createDemoView(focus, spatialModel) {
+  if (!focus) return null;
+  return {
+    position: {
+      x: focus.x + 16,
+      y: Math.min(
+        spatialModel.waterLevel - 2.5,
+        focus.floorY + Math.min(6.5, focus.depth * 0.42),
+      ),
+      z: focus.z + 18,
+    },
+    target: {
+      x: focus.x,
+      y: Math.min(spatialModel.waterLevel - 3, focus.floorY + 3.2),
+      z: focus.z,
+    },
+  };
+}
+
 export function createAquaticHabitatLayout(spatialModel, options = {}) {
   const fishSchoolCount = Math.max(0, Math.round(finite(options.fishSchoolCount, 3)));
   const grassPatchCount = Math.max(0, Math.round(finite(options.grassPatchCount, 14)));
   const coralClusterCount = Math.max(0, Math.round(finite(options.coralClusterCount, 8)));
   const random = createRandom(spatialModel.seed + 0x51f15e);
+  const zones = createHabitatZones(spatialModel, options, random);
 
   const fishPositions = spatialModel.findPositions({
     count: fishSchoolCount,
@@ -99,21 +177,16 @@ export function createAquaticHabitatLayout(spatialModel, options = {}) {
     grassPatches[0].radius = 5.5;
   }
 
-  const focus = habitatAnchor;
-  const demoView = focus ? {
-    position: {
-      x: focus.x + 14,
-      y: Math.min(spatialModel.waterLevel - 2.5, focus.floorY + Math.min(5.5, focus.depth * 0.42)),
-      z: focus.z + 15,
-    },
-    target: {
-      x: focus.x,
-      y: Math.min(spatialModel.waterLevel - 3, focus.floorY + 3.2),
-      z: focus.z,
-    },
-  } : null;
+  const demoZone = zones.find((zone) => zone.habitatClass === 'reef')
+    ?? zones.find((zone) => zone.habitatClass === 'grass-bed')
+    ?? zones[0]
+    ?? null;
+  const focus = demoZone ?? habitatAnchor;
+  const demoView = createDemoView(focus, spatialModel);
 
   return {
+    zones,
+    demoZone,
     fishSchools,
     grassPatches,
     coralClusters,

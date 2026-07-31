@@ -43,3 +43,11 @@ test('editor exposes aquatic controls, a demo view, and FPS diving controls', as
   assert.match(fpsSource, /ControlLeft/);
   assert.match(fpsSource, /swimming/);
 });
+
+test('C keyboard shortcut opens the hybrid aquatic habitat view outside form fields', async () => {
+  const appSource = await readFile(new URL('../src/app/TerrainEditorApp.js', import.meta.url), 'utf8');
+
+  assert.match(appSource, /event\.key\.toLowerCase\(\) === 'c'/);
+  assert.match(appSource, /#focusUnderwaterDemo\(\)/);
+  assert.match(appSource, /INPUT|TEXTAREA|SELECT/);
+});

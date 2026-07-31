@@ -40,11 +40,43 @@ const dropFragment = /* glsl */ `
 
   void main() {
     vec4 info = texture2D(tInput, vUv);
-    vec2 delta = abs(vUv - uCenter);
-    delta = min(delta, 1.0 - delta);
+    vec2 delta = vUv - uCenter;
     float drop = max(0.0, 1.0 - length(delta) / max(uRadius, 0.0001));
     drop = 0.5 - 0.5 * cos(drop * PI);
     info.r += drop * uStrength;
+    gl_FragColor = info;
+  }
+`;
+
+const sphereFragment = /* glsl */ `
+  precision highp float;
+  uniform sampler2D tInput;
+  uniform vec3 uOldCenter;
+  uniform vec3 uNewCenter;
+  uniform float uRadius;
+  uniform float uWorldSize;
+  uniform float uDisplacementScale;
+  varying vec2 vUv;
+
+  float submergedVolume(vec3 point, vec3 center, float radius) {
+    float horizontal = length(point.xz - center.xz);
+    if (horizontal >= radius) return 0.0;
+    float halfHeight = sqrt(max(radius * radius - horizontal * horizontal, 0.0));
+    float bottom = center.y - halfHeight;
+    float top = min(center.y + halfHeight, 0.0);
+    return max(top - bottom, 0.0);
+  }
+
+  void main() {
+    vec4 info = texture2D(tInput, vUv);
+    vec3 point = vec3(
+      (vUv.x - 0.5) * uWorldSize,
+      0.0,
+      (vUv.y - 0.5) * uWorldSize
+    );
+    float oldVolume = submergedVolume(point, uOldCenter, uRadius);
+    float newVolume = submergedVolume(point, uNewCenter, uRadius);
+    info.r += (oldVolume - newVolume) * uDisplacementScale;
     gl_FragColor = info;
   }
 `;
@@ -77,8 +109,8 @@ function createTarget(size, type) {
     depthBuffer: false,
     stencilBuffer: false,
   });
-  target.texture.wrapS = THREE.RepeatWrapping;
-  target.texture.wrapT = THREE.RepeatWrapping;
+  target.texture.wrapS = THREE.ClampToEdgeWrapping;
+  target.texture.wrapT = THREE.ClampToEdgeWrapping;
   target.texture.generateMipmaps = false;
   return target;
 }
@@ -121,6 +153,20 @@ export class GpuWaterSimulation {
         uCenter: { value: new THREE.Vector2(0.5, 0.5) },
         uRadius: { value: 0.035 },
         uStrength: { value: 0.015 },
+      },
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.sphereMaterial = new THREE.ShaderMaterial({
+      vertexShader: fullscreenVertex,
+      fragmentShader: sphereFragment,
+      uniforms: {
+        tInput: { value: null },
+        uOldCenter: { value: new THREE.Vector3() },
+        uNewCenter: { value: new THREE.Vector3() },
+        uRadius: { value: 1 },
+        uWorldSize: { value: 96 },
+        uDisplacementScale: { value: 0.012 },
       },
       depthTest: false,
       depthWrite: false,
@@ -205,6 +251,48 @@ export class GpuWaterSimulation {
     this.#renderPass(this.dropMaterial);
   }
 
+  moveSphere(oldCenter, newCenter, radius, {
+    origin = { x: 0, y: 0 },
+    waterLevel = 0,
+    worldSize = 96,
+    displacementScale = 0.012,
+  } = {}) {
+    const safeRadius = Math.max(0.02, Number(radius) || 0.02);
+    const safeWorldSize = Math.max(1, Number(worldSize) || 96);
+    const oldLocal = this.sphereMaterial.uniforms.uOldCenter.value.set(
+      oldCenter.x - origin.x,
+      oldCenter.y - waterLevel,
+      oldCenter.z - origin.y,
+    );
+    const newLocal = this.sphereMaterial.uniforms.uNewCenter.value.set(
+      newCenter.x - origin.x,
+      newCenter.y - waterLevel,
+      newCenter.z - origin.y,
+    );
+    const margin = safeWorldSize * 0.5 + safeRadius;
+    const outside = (oldLocal.x < -margin && newLocal.x < -margin)
+      || (oldLocal.x > margin && newLocal.x > margin)
+      || (oldLocal.z < -margin && newLocal.z < -margin)
+      || (oldLocal.z > margin && newLocal.z > margin);
+    if (outside || oldCenter.distanceToSquared(newCenter) < 1e-8) return false;
+    this.sphereMaterial.uniforms.tInput.value = this.targetA.texture;
+    this.sphereMaterial.uniforms.uRadius.value = safeRadius;
+    this.sphereMaterial.uniforms.uWorldSize.value = safeWorldSize;
+    this.sphereMaterial.uniforms.uDisplacementScale.value = THREE.MathUtils.clamp(
+      Number(displacementScale) || 0.012,
+      0.001,
+      0.04,
+    );
+    this.#renderPass(this.sphereMaterial);
+    return true;
+  }
+
+  reset() {
+    this.accumulator = 0;
+    this.#clear();
+    this.#updateNormals();
+  }
+
   update(deltaSeconds) {
     this.accumulator += Math.min(deltaSeconds, 0.05);
     let steps = 0;
@@ -222,6 +310,7 @@ export class GpuWaterSimulation {
     this.geometry.dispose();
     this.stepMaterial.dispose();
     this.dropMaterial.dispose();
+    this.sphereMaterial.dispose();
     this.normalMaterial.dispose();
   }
 }

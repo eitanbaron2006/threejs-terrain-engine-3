@@ -1,5 +1,10 @@
 import * as THREE from 'three';
-import { integrateBuoyantBody } from './WaterInteractionPhysics.js';
+import { sweptSphereHit } from '../player/ProjectilePhysics.js';
+import {
+  applySphereImpact,
+  integrateBuoyantBody,
+  sphereSimulationMass,
+} from './WaterInteractionPhysics.js';
 
 export function sampleWaterSurface(x, z, time, waveAmplitude = 0.34, waterLevel = 0) {
   const first = Math.sin((x * 0.82 + z * 0.57) * 0.014 + time * 0.78) * 0.50;
@@ -26,6 +31,7 @@ export class WaterInteractionSystem {
     this.group.name = 'FloatingWaterTestObjects';
     this.scene.add(this.group);
     this.bodies = [];
+    this.displacements = [];
     this.rebuild(spatialModel, this.settings);
   }
 
@@ -73,9 +79,16 @@ export class WaterInteractionSystem {
         mesh,
         position: mesh.position,
         velocity: new THREE.Vector3(),
+        angularVelocity: new THREE.Vector3(),
         radius,
         density: Math.max(0.1, Number(settings.waterObjectDensity ?? 0.58)),
+        mass: sphereSimulationMass(
+          radius,
+          Math.max(0.1, Number(settings.waterObjectDensity ?? 0.58)),
+        ),
         anchor: new THREE.Vector2(position.x, position.z),
+        initialPosition: mesh.position.clone(),
+        initialQuaternion: mesh.quaternion.clone(),
         phase: index * 1.731,
       });
     });
@@ -91,18 +104,21 @@ export class WaterInteractionSystem {
     this.group.visible = this.settings.floatingSpheresEnabled !== false;
     for (const body of this.bodies) {
       body.density = Math.max(0.1, Number(settings.waterObjectDensity ?? 0.58));
+      body.mass = sphereSimulationMass(body.radius, body.density);
     }
     if (requiresRebuild) this.rebuild(this.spatialModel, this.settings);
   }
 
   update(deltaSeconds) {
     if (!this.group.visible) return;
+    this.displacements.length = 0;
     const delta = Math.min(Math.max(Number(deltaSeconds) || 0, 0), 0.05);
     this.elapsed += delta;
     const substeps = Math.max(1, Math.ceil(delta / 0.012));
     const step = delta / substeps;
 
     for (const body of this.bodies) {
+      const previous = body.position.clone();
       for (let index = 0; index < substeps; index += 1) {
         const surfaceY = sampleWaterSurface(
           body.position.x,
@@ -115,13 +131,17 @@ export class WaterInteractionSystem {
         const waveDrift = Math.sin(this.elapsed * 0.72 + body.phase) * 0.24;
         body.velocity.x += waveDrift * step;
         body.velocity.z += Math.cos(this.elapsed * 0.58 + body.phase) * 0.18 * step;
-        integrateBuoyantBody(body, {
+        const integration = integrateBuoyantBody(body, {
           surfaceY,
           floorY,
           gravity: 9.81,
           dragCoefficient: 1.28,
           restitution: 0.12,
         }, step);
+        const angularDamping = 1 / (
+          1 + (0.16 + integration.submergedFraction * 2.4) * step
+        );
+        body.angularVelocity.multiplyScalar(angularDamping);
       }
 
       const dx = body.position.x - body.anchor.x;
@@ -134,6 +154,67 @@ export class WaterInteractionSystem {
       }
       body.mesh.rotation.x += body.velocity.z * delta / body.radius;
       body.mesh.rotation.z -= body.velocity.x * delta / body.radius;
+      const angularSpeed = body.angularVelocity.length();
+      if (angularSpeed > 1e-6) {
+        const axis = body.angularVelocity.clone().multiplyScalar(1 / angularSpeed);
+        const rotation = new THREE.Quaternion().setFromAxisAngle(axis, angularSpeed * delta);
+        body.mesh.quaternion.premultiply(rotation);
+      }
+      this.displacements.push({
+        previous,
+        current: body.position.clone(),
+        radius: body.radius,
+      });
+    }
+  }
+
+  consumeDisplacements() {
+    return this.displacements.splice(0);
+  }
+
+  traceProjectile(projectile) {
+    if (!this.group.visible) return { hit: false };
+    let nearest = null;
+    for (const body of this.bodies) {
+      const hit = sweptSphereHit(
+        projectile.start,
+        projectile.end,
+        projectile.radius,
+        body.position,
+        body.radius,
+      );
+      if (!hit || (nearest && nearest.time <= hit.time)) continue;
+      nearest = { ...hit, body };
+    }
+    if (!nearest) return { hit: false };
+
+    const relativeVelocity = projectile.velocity.clone().sub(nearest.body.velocity);
+    const contactOffset = nearest.normal.clone().multiplyScalar(nearest.body.radius);
+    const impulse = applySphereImpact(nearest.body, {
+      projectileMass: projectile.mass,
+      relativeVelocity,
+      normal: nearest.normal,
+      contactOffset,
+      restitution: 0.28,
+    });
+    if (impulse <= 0) return { hit: false };
+    return {
+      hit: true,
+      time: nearest.time,
+      point: nearest.point,
+      normal: nearest.normal,
+      body: nearest.body,
+      impulse,
+    };
+  }
+
+  reset() {
+    this.displacements.length = 0;
+    for (const body of this.bodies) {
+      body.position.copy(body.initialPosition);
+      body.velocity.set(0, 0, 0);
+      body.angularVelocity.set(0, 0, 0);
+      body.mesh.quaternion.copy(body.initialQuaternion);
     }
   }
 

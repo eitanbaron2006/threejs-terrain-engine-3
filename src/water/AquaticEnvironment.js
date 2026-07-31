@@ -1,5 +1,91 @@
 import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { AquaticAssetLibrary } from './AquaticAssetLibrary.js';
+import { createAquaticHabitatGeometryKit } from './AquaticHabitatGeometry.js';
 import { createAquaticHabitatLayout } from './AquaticHabitatLayout.js';
+import { HabitatStream } from './AquaticHabitatStream.js';
+import { computeSchoolVelocity } from './AquaticSchooling.js';
+
+const HERO_SPECIES = [
+  {
+    id: 'reef-fish-a',
+    url: '/assets/aquatic/fish/fish-1.fbx',
+    license: 'CC0-1.0',
+    scale: 0.0018,
+    tint: '#d6a85f',
+    swimClip: 'Armature|Swim',
+    habitats: ['reef', 'grass-bed'],
+  },
+  {
+    id: 'reef-fish-b',
+    url: '/assets/aquatic/fish/fish-2.fbx',
+    license: 'CC0-1.0',
+    scale: 0.0015,
+    tint: '#68a6ad',
+    swimClip: 'Armature|Swim.001',
+    habitats: ['reef'],
+  },
+  {
+    id: 'reef-fish-c',
+    url: '/assets/aquatic/fish/fish-3.fbx',
+    license: 'CC0-1.0',
+    scale: 0.002,
+    tint: '#b96f5d',
+    swimClip: 'Armature|Swim',
+    habitats: ['reef', 'grass-bed'],
+  },
+  {
+    id: 'manta',
+    url: '/assets/aquatic/fish/manta-ray.fbx',
+    license: 'CC0-1.0',
+    scale: 0.003,
+    tint: '#637f8a',
+    swimClip: 'Armature|Swim',
+    habitats: ['deep-school'],
+  },
+  {
+    id: 'shark',
+    url: '/assets/aquatic/fish/shark.fbx',
+    license: 'CC0-1.0',
+    scale: 0.0025,
+    tint: '#71838a',
+    swimClip: 'Armature|Swim',
+    habitats: ['deep-school', 'reef'],
+  },
+];
+
+const QUALITY = {
+  low: {
+    activationRadius: 170,
+    releaseRadius: 220,
+    fishLimit: 54,
+    vegetationLimit: 480,
+    heroLimit: 4,
+  },
+  medium: {
+    activationRadius: 230,
+    releaseRadius: 300,
+    fishLimit: 100,
+    vegetationLimit: 1100,
+    heroLimit: 8,
+  },
+  high: {
+    activationRadius: 300,
+    releaseRadius: 380,
+    fishLimit: 180,
+    vegetationLimit: 2000,
+    heroLimit: 12,
+  },
+};
+
+function finite(value, fallback) {
+  return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
 
 function createRandom(seed) {
   let state = (Math.trunc(Number(seed) || 1) >>> 0) || 1;
@@ -12,222 +98,448 @@ function createRandom(seed) {
   };
 }
 
-function disposeMesh(mesh) {
-  mesh.geometry?.dispose?.();
-  if (Array.isArray(mesh.material)) mesh.material.forEach((material) => material.dispose?.());
-  else mesh.material?.dispose?.();
-}
-
-function createBladeGeometry() {
-  const geometry = new THREE.PlaneGeometry(0.3, 3.2, 1, 5);
-  geometry.translate(0, 1.6, 0);
-  const positions = geometry.attributes.position;
-  for (let index = 0; index < positions.count; index += 1) {
-    const y = positions.getY(index);
-    positions.setX(index, positions.getX(index) + Math.pow(y / 3.2, 2) * 0.38);
-  }
-  positions.needsUpdate = true;
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
 function createFishTailGeometry() {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute([
     0, 0, 0,
-    -1.15, 0.78, 0,
-    -1.15, -0.78, 0,
+    -1.18, 0.82, 0,
+    -1.18, -0.82, 0,
   ], 3));
   geometry.setIndex([0, 1, 2]);
   geometry.computeVertexNormals();
   return geometry;
 }
 
+function qualitySettings(settings) {
+  return QUALITY[settings.habitatQuality] ?? QUALITY.high;
+}
+
+function paletteFor(item) {
+  if (item.id.includes('grass')) return ['#3d9869', '#52aa74', '#6b9b61', '#849653'];
+  if (item.id.includes('kelp')) return ['#7f944e', '#9aa45a', '#698844'];
+  if (item.id.includes('coral')) return ['#e58a78', '#ed9a78', '#d8a16f', '#c6819c', '#d8b176'];
+  if (item.id.includes('sponge')) return ['#e29a45', '#eead54', '#d18950', '#dda93f'];
+  return ['#68766e', '#7c8178', '#596860'];
+}
+
 export class AquaticEnvironment {
-  constructor({ scene, spatialModel, settings = {} }) {
+  constructor({
+    scene,
+    spatialModel,
+    settings = {},
+    loadAsset = null,
+  }) {
     this.scene = scene;
     this.spatialModel = spatialModel;
     this.settings = { ...settings };
     this.elapsed = 0;
+    this.streamAccumulator = 0;
+    this.disposed = false;
     this.group = new THREE.Group();
     this.group.name = 'AquaticEnvironment';
     this.scene.add(this.group);
+    this.batchGroup = new THREE.Group();
+    this.batchGroup.name = 'AquaticHabitatBatches';
+    this.heroGroup = new THREE.Group();
+    this.heroGroup.name = 'AquaticHeroFish';
+    this.group.add(this.batchGroup, this.heroGroup);
+    this.geometryKit = createAquaticHabitatGeometryKit();
+    this.batchMeshes = [];
+    this.ownedResources = new Set();
     this.fishRecords = [];
-    this.meshes = [];
+    this.heroRecords = [];
+    this.heroTemplates = new Map();
     this.dummy = new THREE.Object3D();
+    const loader = new FBXLoader();
+    this.assetLibrary = new AquaticAssetLibrary({
+      load: loadAsset ?? ((entry) => loader.loadAsync(entry.url)),
+      fallbackFactory: () => null,
+    });
     this.rebuild(spatialModel, this.settings);
+    this.#loadHeroSpecies();
   }
 
-  #addMesh(mesh) {
-    this.group.add(mesh);
-    this.meshes.push(mesh);
+  #registerBatch(mesh, ownsResources = false) {
+    this.batchGroup.add(mesh);
+    this.batchMeshes.push(mesh);
+    if (ownsResources) {
+      this.ownedResources.add(mesh.geometry);
+      if (Array.isArray(mesh.material)) mesh.material.forEach((item) => this.ownedResources.add(item));
+      else this.ownedResources.add(mesh.material);
+    }
     return mesh;
+  }
+
+  #clearBatches() {
+    for (const mesh of this.batchMeshes) this.batchGroup.remove(mesh);
+    this.batchMeshes = [];
+    for (const resource of this.ownedResources) resource.dispose?.();
+    this.ownedResources.clear();
+    this.fishRecords = [];
+    this.fishBodyMesh = null;
+    this.fishTailMesh = null;
+    this.vegetationCount = 0;
+  }
+
+  #clearHeroes() {
+    for (const record of this.heroRecords) {
+      record.mixer.stopAllAction();
+      this.heroGroup.remove(record.root);
+    }
+    this.heroRecords = [];
+  }
+
+  #configureStream() {
+    const quality = qualitySettings(this.settings);
+    this.stream = new HabitatStream({
+      activationRadius: quality.activationRadius,
+      releaseRadius: quality.releaseRadius,
+    });
+    this.stream.setLayout(this.layout);
+    if (this.layout.demoZone) this.stream.activate(this.layout.demoZone.id);
   }
 
   rebuild(spatialModel = this.spatialModel, settings = this.settings) {
     this.spatialModel = spatialModel;
     this.settings = { ...settings };
-    for (const mesh of this.meshes) {
-      this.group.remove(mesh);
-      disposeMesh(mesh);
-    }
-    this.meshes = [];
-    this.fishRecords = [];
+    this.#clearBatches();
+    this.#clearHeroes();
     this.layout = createAquaticHabitatLayout(spatialModel, {
+      habitatDensity: finite(settings.habitatDensity, 1),
       fishSchoolCount: Math.max(1, Math.ceil(Number(settings.fishCount ?? 30) / 10)),
       grassPatchCount: Math.max(0, Math.ceil(Number(settings.seagrassCount ?? 120) / 9)),
       coralClusterCount: Math.max(0, Number(settings.coralCount ?? 18)),
     });
-    this.#createFish();
-    this.#createSeagrass();
-    this.#createCoral();
+    this.#configureStream();
+    this.#rebuildActiveBatches();
     this.group.visible = settings.aquaticLifeEnabled !== false;
   }
 
-  #createFish() {
-    const requested = Math.max(0, Math.min(48, Math.round(Number(this.settings.fishCount ?? 30))));
-    if (!requested || !this.layout.fishSchools.length) return;
-    const random = createRandom(this.spatialModel.seed + 2203);
+  async #loadHeroSpecies() {
+    const loaded = await Promise.all(HERO_SPECIES.map(async (entry) => {
+      const object = await this.assetLibrary.loadSpecies(entry);
+      return { entry, object };
+    }));
+    if (this.disposed) return;
+    for (const { entry, object } of loaded) {
+      if (!object) continue;
+      object.traverse((child) => {
+        if (!child.isMesh) return;
+        child.castShadow = false;
+        child.receiveShadow = true;
+        child.frustumCulled = true;
+        if (child.material?.clone) {
+          child.material = child.material.clone();
+          if ('roughness' in child.material) child.material.roughness = 0.56;
+          if ('metalness' in child.material) child.material.metalness = 0;
+          if (child.material.color) {
+            child.material.color.lerp(new THREE.Color(entry.tint), 0.34);
+          }
+          if (child.material.emissive) {
+            child.material.emissive.copy(new THREE.Color(entry.tint)).multiplyScalar(0.1);
+            child.material.emissiveIntensity = 0.24;
+          }
+        }
+      });
+      this.heroTemplates.set(entry.id, { entry, object });
+    }
+    this.#rebuildHeroFish();
+  }
+
+  #activeZones() {
+    return this.layout.zones.filter((zone) => this.stream.active.has(zone.id));
+  }
+
+  #rebuildActiveBatches() {
+    this.#clearBatches();
+    const zones = this.#activeZones();
+    if (!zones.length) {
+      this.#clearHeroes();
+      return;
+    }
+    this.#createSchoolFish(zones);
+    this.#createHabitatInstances(zones);
+    this.#rebuildHeroFish();
+  }
+
+  #createSchoolFish(zones) {
+    const quality = qualitySettings(this.settings);
+    const density = clamp(finite(this.settings.fishSchoolDensity, 1), 0.1, 2);
+    const requested = Math.min(
+      quality.fishLimit,
+      Math.max(0, Math.round(zones.reduce((sum, zone) => sum + zone.fishTarget, 0) * density)),
+    );
+    if (!requested) return;
+
+    const random = createRandom(this.spatialModel.seed + 2203 + zones.length * 97);
     const bodyGeometry = new THREE.SphereGeometry(1, 14, 9);
     const tailGeometry = createFishTailGeometry();
     const bodyMaterial = new THREE.MeshPhysicalMaterial({
-      color: '#79a9a0',
-      roughness: 0.52,
-      metalness: 0.02,
-      clearcoat: 0.12,
+      color: '#ffffff',
+      emissive: '#152d2c',
+      emissiveIntensity: 0.28,
+      roughness: 0.5,
+      metalness: 0,
+      clearcoat: 0.08,
       vertexColors: true,
     });
     const tailMaterial = new THREE.MeshStandardMaterial({
-      color: '#476f6d',
-      roughness: 0.5,
+      color: '#ffffff',
+      emissive: '#102524',
+      emissiveIntensity: 0.24,
+      roughness: 0.58,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
-    this.fishBodyMesh = this.#addMesh(new THREE.InstancedMesh(bodyGeometry, bodyMaterial, requested));
-    this.fishTailMesh = this.#addMesh(new THREE.InstancedMesh(tailGeometry, tailMaterial, requested));
-    this.fishBodyMesh.name = 'AquaticFishBodies';
-    this.fishTailMesh.name = 'AquaticFishTails';
+    this.fishBodyMesh = this.#registerBatch(
+      new THREE.InstancedMesh(bodyGeometry, bodyMaterial, requested),
+      true,
+    );
+    this.fishTailMesh = this.#registerBatch(
+      new THREE.InstancedMesh(tailGeometry, tailMaterial, requested),
+      true,
+    );
+    this.fishBodyMesh.name = 'AquaticSchoolFishBodies';
+    this.fishTailMesh.name = 'AquaticSchoolFishTails';
     this.fishBodyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.fishTailMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const fishColors = ['#8ab8a7', '#6f91a4', '#c2a86d', '#758d72', '#a57c62'];
+    const colors = ['#9cc9b8', '#83afc4', '#d6bd72', '#8fa784', '#c98269', '#a5bd91'];
 
     for (let index = 0; index < requested; index += 1) {
-      const school = this.layout.fishSchools[index % this.layout.fishSchools.length];
-      const record = {
-        school,
-        orbit: random() * Math.PI * 2,
-        orbitRadius: school.radius * (0.25 + random() * 0.72),
-        verticalOffset: (random() - 0.5) * Math.min(5, school.depth * 0.22),
-        speed: school.speed * (0.74 + random() * 0.52),
+      const zone = zones[index % zones.length];
+      const angle = random() * Math.PI * 2;
+      const radius = Math.sqrt(random()) * zone.radius * 0.65;
+      const x = zone.x + Math.cos(angle) * radius;
+      const z = zone.z + Math.sin(angle) * radius;
+      const floorY = this.spatialModel.sampleFloor(x, z);
+      const upperY = this.spatialModel.waterLevel - 1.4;
+      const y = Math.min(
+        upperY,
+        floorY + 2.2 + random() * Math.max(1, Math.min(zone.depth * 0.52, 10)),
+      );
+      const heading = random() * Math.PI * 2;
+      const speed = 1.2 + random() * 1.6;
+      this.fishRecords.push({
+        zone,
+        position: new THREE.Vector3(x, y, z),
+        velocity: new THREE.Vector3(Math.cos(heading) * speed, 0, Math.sin(heading) * speed),
         phase: random() * Math.PI * 2,
-        scale: 0.46 + random() * 0.38,
-      };
-      this.fishRecords.push(record);
-      const color = new THREE.Color(fishColors[Math.floor(random() * fishColors.length)]);
+        scale: 0.38 + random() * 0.5,
+        maximumSpeed: 2.2 + random() * 1.7,
+      });
+      const color = new THREE.Color(colors[Math.floor(random() * colors.length)]);
       this.fishBodyMesh.setColorAt(index, color);
-      this.fishTailMesh.setColorAt(index, color.clone().multiplyScalar(0.72));
+      this.fishTailMesh.setColorAt(index, color.clone().multiplyScalar(0.7));
     }
     this.fishBodyMesh.instanceColor.needsUpdate = true;
     this.fishTailMesh.instanceColor.needsUpdate = true;
-    this.fishBodyMesh.castShadow = true;
   }
 
-  #createSeagrass() {
-    const requested = Math.max(0, Math.min(180, Math.round(Number(this.settings.seagrassCount ?? 120))));
-    if (!requested || !this.layout.grassPatches.length) return;
-    const random = createRandom(this.spatialModel.seed + 3701);
-    const geometry = createBladeGeometry();
-    const material = new THREE.MeshStandardMaterial({
-      color: '#2f6d51',
-      roughness: 0.82,
-      metalness: 0,
-      emissive: '#123c2c',
-      emissiveIntensity: 0.18,
-      side: THREE.DoubleSide,
-      vertexColors: true,
-    });
-    const mesh = this.#addMesh(new THREE.InstancedMesh(geometry, material, requested));
-    mesh.name = 'AquaticSeagrass';
-    const palette = ['#255943', '#34765a', '#5a7e55', '#38674d'];
+  #createHabitatInstances(zones) {
+    const quality = qualitySettings(this.settings);
+    const density = clamp(finite(this.settings.vegetationDensity, 1), 0.1, 2);
+    const total = Math.min(
+      quality.vegetationLimit,
+      Math.max(0, Math.round(
+        zones.reduce((sum, zone) => sum + zone.vegetationTarget, 0) * density,
+      )),
+    );
+    if (!total) return;
 
-    for (let index = 0; index < requested; index += 1) {
-      const patch = this.layout.grassPatches[index % this.layout.grassPatches.length];
+    const descriptors = [
+      ...this.geometryKit.plants,
+      ...this.geometryKit.corals,
+      ...this.geometryKit.sponges,
+      ...this.geometryKit.rocks,
+    ];
+    const counts = new Map(descriptors.map((item) => [item.id, 0]));
+    for (let index = 0; index < total; index += 1) {
+      const zone = zones[index % zones.length];
+      const candidates = zone.habitatClass === 'reef'
+        ? descriptors
+        : zone.habitatClass === 'grass-bed'
+          ? [...this.geometryKit.plants, ...this.geometryKit.rocks]
+          : this.geometryKit.rocks;
+      const item = candidates[index % candidates.length];
+      counts.set(item.id, counts.get(item.id) + 1);
+    }
+
+    const random = createRandom(this.spatialModel.seed + 3701 + zones.length * 151);
+    for (const item of descriptors) {
+      const count = counts.get(item.id);
+      if (!count) continue;
+      const mesh = this.#registerBatch(new THREE.InstancedMesh(
+        item.geometry,
+        item.material,
+        count,
+      ));
+      mesh.name = `AquaticHabitat:${item.id}`;
+      mesh.castShadow = item.id.includes('coral') || item.id.includes('rock');
+      mesh.receiveShadow = true;
+      const palette = paletteFor(item);
+
+      for (let index = 0; index < count; index += 1) {
+        const compatible = zones.filter((zone) => (
+          zone.habitatClass === 'reef'
+          || (zone.habitatClass === 'grass-bed'
+            && (item.id.includes('grass') || item.id.includes('kelp') || item.id.includes('rock')))
+          || (zone.habitatClass === 'deep-school' && item.id.includes('rock'))
+        ));
+        const zone = compatible[index % compatible.length] ?? zones[index % zones.length];
+        const angle = random() * Math.PI * 2;
+        const isDemoShowcase = zone.id === this.layout.demoZone?.id && index < Math.min(count, 7);
+        const radius = isDemoShowcase
+          ? 4.5 + index * 2.1 + random() * 1.6
+          : Math.sqrt(random()) * zone.radius;
+        const x = zone.x + Math.cos(angle) * radius;
+        const z = zone.z + Math.sin(angle) * radius;
+        const floorY = this.spatialModel.sampleFloor(x, z);
+        const baseScale = item.id.includes('grass') ? 0.65 : item.id.includes('coral') ? 0.9 : 0.72;
+        const showcaseScale = isDemoShowcase ? 1.28 : 1;
+        const scale = baseScale * (0.58 + random() * 1.05) * zone.density * showcaseScale;
+        this.dummy.position.set(x, floorY + 0.04, z);
+        this.dummy.rotation.set(
+          (random() - 0.5) * 0.08,
+          random() * Math.PI * 2,
+          (random() - 0.5) * (item.sway ? 0.22 : 0.08),
+        );
+        this.dummy.scale.set(
+          scale * (0.8 + random() * 0.4),
+          scale * (0.75 + random() * 0.65),
+          scale * (0.8 + random() * 0.4),
+        );
+        this.dummy.updateMatrix();
+        mesh.setMatrixAt(index, this.dummy.matrix);
+        const color = new THREE.Color(palette[Math.floor(random() * palette.length)]);
+        color.offsetHSL((random() - 0.5) * 0.025, (random() - 0.5) * 0.06, (random() - 0.5) * 0.06);
+        mesh.setColorAt(index, color);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+    }
+    this.vegetationCount = total;
+  }
+
+  #rebuildHeroFish() {
+    this.#clearHeroes();
+    const zones = this.#activeZones();
+    if (!zones.length || !this.heroTemplates.size) return;
+    const limit = qualitySettings(this.settings).heroLimit;
+    const random = createRandom(this.spatialModel.seed + 9929 + zones.length * 211);
+    const compatible = [];
+    for (const zone of zones) {
+      for (const template of this.heroTemplates.values()) {
+        if (template.entry.habitats.includes(zone.habitatClass)) compatible.push({ zone, template });
+      }
+    }
+
+    for (let index = 0; index < Math.min(limit, compatible.length * 2); index += 1) {
+      const { zone, template } = compatible[index % compatible.length];
+      const root = cloneSkeleton(template.object);
+      const scale = template.entry.scale * (0.78 + random() * 0.34);
+      root.scale.setScalar(scale);
       const angle = random() * Math.PI * 2;
-      const radius = Math.sqrt(random()) * patch.radius;
-      const x = patch.x + Math.cos(angle) * radius;
-      const z = patch.z + Math.sin(angle) * radius;
+      const radius = 5 + random() * zone.radius * 0.45;
+      const x = zone.x + Math.cos(angle) * radius;
+      const z = zone.z + Math.sin(angle) * radius;
       const floorY = this.spatialModel.sampleFloor(x, z);
-      this.dummy.position.set(x, floorY + 0.08, z);
-      this.dummy.rotation.set(0, random() * Math.PI * 2, (random() - 0.5) * 0.12);
-      const scale = patch.scale * (0.56 + random() * 0.86);
-      this.dummy.scale.set(scale, scale, scale);
-      this.dummy.updateMatrix();
-      mesh.setMatrixAt(index, this.dummy.matrix);
-      mesh.setColorAt(index, new THREE.Color(palette[Math.floor(random() * palette.length)]));
+      const y = Math.min(
+        this.spatialModel.waterLevel - 1.8,
+        floorY + 3 + random() * Math.max(1, Math.min(zone.depth * 0.42, 8)),
+      );
+      root.position.set(x, y, z);
+      root.rotation.y = angle;
+      this.heroGroup.add(root);
+      const mixer = new THREE.AnimationMixer(root);
+      const clip = root.animations?.find((item) => item.name === template.entry.swimClip)
+        ?? root.animations?.[0]
+        ?? template.object.animations?.find((item) => item.name === template.entry.swimClip)
+        ?? template.object.animations?.[0];
+      if (clip) {
+        const action = mixer.clipAction(clip);
+        action.timeScale = 0.72 + random() * 0.42;
+        action.play();
+      }
+      this.heroRecords.push({
+        root,
+        mixer,
+        zone,
+        phase: random() * Math.PI * 2,
+        velocity: new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle))
+          .multiplyScalar(1.1 + random() * 1.2),
+        maximumSpeed: template.entry.id === 'shark' ? 3.6 : 2.8,
+      });
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor.needsUpdate = true;
   }
 
-  #createCoral() {
-    const requested = Math.max(0, Math.min(24, Math.round(Number(this.settings.coralCount ?? 18))));
-    if (!requested || !this.layout.coralClusters.length) return;
-    const random = createRandom(this.spatialModel.seed + 4903);
-    const branchCount = requested * 7;
-    const branchGeometry = new THREE.CylinderGeometry(0.22, 0.46, 1, 7, 1);
-    branchGeometry.translate(0, 0.5, 0);
-    const tipGeometry = new THREE.SphereGeometry(0.5, 10, 7);
-    const coralMaterial = new THREE.MeshStandardMaterial({
-      color: '#ad6f62',
-      roughness: 0.68,
-      metalness: 0,
-      emissive: '#3d171b',
-      emissiveIntensity: 0.12,
-      vertexColors: true,
-    });
-    const branchMesh = this.#addMesh(new THREE.InstancedMesh(branchGeometry, coralMaterial, branchCount));
-    const tipMesh = this.#addMesh(new THREE.InstancedMesh(tipGeometry, coralMaterial.clone(), branchCount));
-    branchMesh.name = 'AquaticCoralBranches';
-    tipMesh.name = 'AquaticCoralTips';
-    const palette = ['#b56f64', '#cb8b72', '#9c6b84', '#d0a36f', '#8b7d65'];
-
-    for (let index = 0; index < branchCount; index += 1) {
-      const cluster = this.layout.coralClusters[Math.floor(index / 7) % this.layout.coralClusters.length];
-      const localIndex = index % 7;
-      const angle = localIndex / 7 * Math.PI * 2 + cluster.heading;
-      const radial = localIndex === 0 ? 0 : cluster.radius * (0.28 + random() * 0.44);
-      const x = cluster.x + Math.cos(angle) * radial;
-      const z = cluster.z + Math.sin(angle) * radial;
-      const floorY = this.spatialModel.sampleFloor(x, z);
-      const height = cluster.scale * (1.4 + random() * 3.1);
-      const lean = (random() - 0.5) * 0.38;
-      const color = new THREE.Color(palette[Math.floor(random() * palette.length)]);
-
-      this.dummy.position.set(x, floorY + 0.04, z);
-      this.dummy.rotation.set(Math.cos(angle) * lean, angle, Math.sin(angle) * lean);
-      this.dummy.scale.set(cluster.scale, height, cluster.scale);
-      this.dummy.updateMatrix();
-      branchMesh.setMatrixAt(index, this.dummy.matrix);
-      branchMesh.setColorAt(index, color);
-
-      this.dummy.position.set(
-        x + Math.sin(angle) * lean * height * 0.45,
-        floorY + height,
-        z + Math.cos(angle) * lean * height * 0.45,
+  #updateSchoolFish(delta) {
+    if (!this.fishBodyMesh || !this.fishTailMesh) return;
+    for (let index = 0; index < this.fishRecords.length; index += 1) {
+      const fish = this.fishRecords[index];
+      const floorY = this.spatialModel.sampleFloor(fish.position.x, fish.position.z);
+      const centerY = Math.min(
+        this.spatialModel.waterLevel - 2,
+        fish.zone.floorY + Math.min(7, fish.zone.depth * 0.45),
       );
-      this.dummy.rotation.set(0, angle, 0);
-      this.dummy.scale.setScalar(cluster.scale * (0.48 + random() * 0.3));
+      const next = computeSchoolVelocity({
+        position: fish.position,
+        velocity: fish.velocity,
+        neighbours: [],
+        center: { x: fish.zone.x, y: centerY, z: fish.zone.z },
+        floorY,
+        surfaceY: this.spatialModel.waterLevel,
+        seedPhase: fish.phase,
+        elapsed: this.elapsed,
+        maximumSpeed: fish.maximumSpeed,
+      }, delta);
+      fish.velocity.set(next.x, next.y, next.z);
+      fish.position.addScaledVector(fish.velocity, delta);
+      const yaw = Math.atan2(fish.velocity.z, fish.velocity.x);
+      const swim = Math.sin(this.elapsed * 8 + fish.phase);
+
+      this.dummy.position.copy(fish.position);
+      this.dummy.rotation.set(0, -yaw, swim * 0.025);
+      this.dummy.scale.set(1.55 * fish.scale, 0.5 * fish.scale, 0.68 * fish.scale);
       this.dummy.updateMatrix();
-      tipMesh.setMatrixAt(index, this.dummy.matrix);
-      tipMesh.setColorAt(index, color.clone().offsetHSL(0, 0.03, 0.08));
+      this.fishBodyMesh.setMatrixAt(index, this.dummy.matrix);
+
+      this.dummy.position.copy(fish.position).addScaledVector(fish.velocity, -0.42 * fish.scale);
+      this.dummy.rotation.set(0, -yaw + swim * 0.26, 0);
+      this.dummy.scale.setScalar(fish.scale);
+      this.dummy.updateMatrix();
+      this.fishTailMesh.setMatrixAt(index, this.dummy.matrix);
     }
-    branchMesh.instanceMatrix.needsUpdate = true;
-    branchMesh.instanceColor.needsUpdate = true;
-    tipMesh.instanceMatrix.needsUpdate = true;
-    tipMesh.instanceColor.needsUpdate = true;
-    branchMesh.castShadow = true;
-    branchMesh.receiveShadow = true;
-    tipMesh.castShadow = true;
+    this.fishBodyMesh.instanceMatrix.needsUpdate = true;
+    this.fishTailMesh.instanceMatrix.needsUpdate = true;
+    this.fishBodyMesh.computeBoundingSphere();
+    this.fishTailMesh.computeBoundingSphere();
+  }
+
+  #updateHeroFish(delta) {
+    for (const record of this.heroRecords) {
+      const floorY = this.spatialModel.sampleFloor(record.root.position.x, record.root.position.z);
+      const centerY = Math.min(
+        this.spatialModel.waterLevel - 2.2,
+        record.zone.floorY + Math.min(7, record.zone.depth * 0.42),
+      );
+      const next = computeSchoolVelocity({
+        position: record.root.position,
+        velocity: record.velocity,
+        neighbours: [],
+        center: { x: record.zone.x, y: centerY, z: record.zone.z },
+        floorY,
+        surfaceY: this.spatialModel.waterLevel,
+        seedPhase: record.phase,
+        elapsed: this.elapsed,
+        maximumSpeed: record.maximumSpeed,
+      }, delta);
+      record.velocity.set(next.x, next.y, next.z);
+      record.root.position.addScaledVector(record.velocity, delta);
+      record.root.rotation.y = Math.atan2(record.velocity.x, record.velocity.z);
+      record.root.rotation.z = Math.sin(this.elapsed * 1.2 + record.phase) * 0.035;
+      record.mixer.update(delta);
+    }
   }
 
   applySettings(settings) {
@@ -235,63 +547,78 @@ export class AquaticEnvironment {
       settings.fishCount !== this.settings.fishCount
       || settings.seagrassCount !== this.settings.seagrassCount
       || settings.coralCount !== this.settings.coralCount
+      || settings.habitatDensity !== this.settings.habitatDensity
+      || settings.fishSchoolDensity !== this.settings.fishSchoolDensity
+      || settings.vegetationDensity !== this.settings.vegetationDensity
+      || settings.habitatQuality !== this.settings.habitatQuality
     );
     this.settings = { ...settings };
     this.group.visible = this.settings.aquaticLifeEnabled !== false;
     if (requiresRebuild) this.rebuild(this.spatialModel, this.settings);
   }
 
-  update(deltaSeconds) {
-    if (!this.group.visible || !this.fishBodyMesh) return;
-    this.elapsed += Math.min(Math.max(Number(deltaSeconds) || 0, 0), 0.05);
-    for (let index = 0; index < this.fishRecords.length; index += 1) {
-      const fish = this.fishRecords[index];
-      const angle = fish.orbit + this.elapsed * fish.speed / Math.max(fish.orbitRadius, 1);
-      const x = fish.school.x + Math.cos(angle) * fish.orbitRadius;
-      const z = fish.school.z + Math.sin(angle) * fish.orbitRadius;
-      const floorY = this.spatialModel.sampleFloor(x, z);
-      const y = THREE.MathUtils.clamp(
-        fish.school.y + fish.verticalOffset + Math.sin(this.elapsed * 1.3 + fish.phase) * 0.55,
-        floorY + 1.2,
-        this.spatialModel.waterLevel - 1.1,
-      );
-      const yaw = -angle + Math.PI * 0.5;
-      const swim = Math.sin(this.elapsed * 7.5 + fish.phase);
-
-      this.dummy.position.set(x, y, z);
-      this.dummy.rotation.set(0, yaw, swim * 0.025);
-      this.dummy.scale.set(1.55 * fish.scale, 0.5 * fish.scale, 0.68 * fish.scale);
-      this.dummy.updateMatrix();
-      this.fishBodyMesh.setMatrixAt(index, this.dummy.matrix);
-
-      const backwardX = Math.cos(yaw + Math.PI) * 1.25 * fish.scale;
-      const backwardZ = -Math.sin(yaw + Math.PI) * 1.25 * fish.scale;
-      this.dummy.position.set(x + backwardX, y, z + backwardZ);
-      this.dummy.rotation.set(0, yaw + swim * 0.24, 0);
-      this.dummy.scale.setScalar(fish.scale);
-      this.dummy.updateMatrix();
-      this.fishTailMesh.setMatrixAt(index, this.dummy.matrix);
+  update(deltaSeconds, focus = null) {
+    if (!this.group.visible) return;
+    const delta = Math.min(Math.max(Number(deltaSeconds) || 0, 0), 0.05);
+    this.elapsed += delta;
+    this.geometryKit.update(this.elapsed);
+    this.streamAccumulator += delta;
+    if (focus && this.streamAccumulator >= 0.2) {
+      const changes = this.stream.update(focus);
+      if (changes.activated.length || changes.released.length) this.#rebuildActiveBatches();
+      this.streamAccumulator = 0;
     }
-    this.fishBodyMesh.instanceMatrix.needsUpdate = true;
-    this.fishTailMesh.instanceMatrix.needsUpdate = true;
+    this.#updateSchoolFish(delta);
+    this.#updateHeroFish(delta);
   }
 
   getDemoView() {
+    const id = this.layout.demoZone?.id;
+    if (id && !this.stream.active.has(id) && this.stream.activate(id)) {
+      this.#rebuildActiveBatches();
+    }
     return this.layout?.demoView ?? null;
+  }
+
+  get activeZoneCount() {
+    return this.stream?.active.size ?? 0;
+  }
+
+  get heroFishCount() {
+    return this.heroRecords.length;
   }
 
   getDiagnostics() {
     return {
-      fish: this.fishRecords.length,
-      seagrass: this.meshes.find((mesh) => mesh.name === 'AquaticSeagrass')?.count ?? 0,
-      coralBranches: this.meshes.find((mesh) => mesh.name === 'AquaticCoralBranches')?.count ?? 0,
+      activeHabitats: this.activeZoneCount,
+      fish: this.fishRecords.length + this.heroRecords.length,
+      schoolFish: this.fishRecords.length,
+      heroFish: this.heroRecords.length,
+      vegetation: this.vegetationCount ?? 0,
+      coralMorphologies: this.geometryKit.corals.length,
+      seagrass: this.batchMeshes
+        .filter((mesh) => mesh.name.includes('grass') || mesh.name.includes('kelp'))
+        .reduce((sum, mesh) => sum + mesh.count, 0),
+      coralBranches: this.batchMeshes
+        .filter((mesh) => mesh.name.includes('coral'))
+        .reduce((sum, mesh) => sum + mesh.count, 0),
     };
   }
 
   dispose() {
+    this.disposed = true;
     this.scene.remove(this.group);
-    for (const mesh of this.meshes) disposeMesh(mesh);
-    this.meshes = [];
-    this.fishRecords = [];
+    this.#clearBatches();
+    this.#clearHeroes();
+    for (const template of this.heroTemplates.values()) {
+      template.object.traverse((child) => {
+        child.geometry?.dispose?.();
+        if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose?.());
+        else child.material?.dispose?.();
+      });
+    }
+    this.heroTemplates.clear();
+    this.assetLibrary.clear();
+    this.geometryKit.dispose();
   }
 }

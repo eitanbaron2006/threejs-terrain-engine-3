@@ -3,7 +3,10 @@ import { createTerrainHeightSampler } from '../terrain/noise.js';
 import { AquaticEnvironment } from './AquaticEnvironment.js';
 import { GpuWaterSimulation } from './GpuWaterSimulation.js';
 import { UnderwaterPostProcess } from './UnderwaterPostProcess.js';
+import { WaterImpactEffects } from './WaterImpactEffects.js';
+import { computeProjectileWaterImpact } from './WaterImpactModel.js';
 import { sampleWaterSurface, WaterInteractionSystem } from './WaterInteractionSystem.js';
+import { waterRadiusToSimulationUv, worldToWaterSimulationUv } from './WaterSimulationCoordinates.js';
 import { WaterSpatialModel } from './WaterSpatialModel.js';
 
 const BATHYMETRY_RESOLUTION = 384;
@@ -111,6 +114,8 @@ const waterVertexShader = /* glsl */ `
   uniform float uWaterLevel;
   uniform float uOceanRadius;
   uniform float uSimulationWorldSize;
+  uniform vec2 uSimulationOrigin;
+  uniform float uSimulationWindowMask;
   uniform float uWaveAmplitude;
   uniform float uRippleAmplitude;
   uniform float uHorizonCurvature;
@@ -118,6 +123,7 @@ const waterVertexShader = /* glsl */ `
   out vec3 vWorldPosition;
   out float vViewDistance;
   out vec2 vSimulationUv;
+  out float vSimulationWindowMask;
 
   float directionalWave(vec2 p, vec2 direction, float frequency, float speed, float phase) {
     return sin(dot(p, direction) * frequency + uTime * speed + phase);
@@ -126,8 +132,12 @@ const waterVertexShader = /* glsl */ `
   void main() {
     vec4 baseWorld = modelMatrix * vec4(position, 1.0);
     vec2 worldXZ = baseWorld.xz;
-    vec2 simulationUv = worldXZ / uSimulationWorldSize;
-    vec4 simulation = texture(uSimulation, simulationUv);
+    vec2 simulationUv = (worldXZ - uSimulationOrigin) / uSimulationWorldSize + 0.5;
+    float simulationEdge = max(abs(simulationUv.x - 0.5), abs(simulationUv.y - 0.5));
+    vSimulationWindowMask = (1.0 - smoothstep(0.42, 0.495, simulationEdge))
+      * uSimulationWindowMask;
+    vec4 simulation = texture(uSimulation, clamp(simulationUv, vec2(0.0), vec2(1.0)))
+      * vSimulationWindowMask;
 
     float wave = directionalWave(worldXZ, normalize(vec2(0.82, 0.57)), 0.014, 0.78, 0.0) * 0.50;
     wave += directionalWave(worldXZ, normalize(vec2(-0.34, 0.94)), 0.026, -1.16, 1.7) * 0.28;
@@ -184,6 +194,7 @@ const waterFragmentShader = /* glsl */ `
   in vec3 vWorldPosition;
   in float vViewDistance;
   in vec2 vSimulationUv;
+  in float vSimulationWindowMask;
 
   float perspectiveDepthToViewZ(float depth, float near, float far) {
     return (near * far) / ((far - near) * depth - far);
@@ -307,7 +318,8 @@ const waterFragmentShader = /* glsl */ `
     float shoreAlpha = smoothstep(0.04, max(0.16, uShoreFade), thickness);
     if (shoreAlpha <= 0.005) discard;
 
-    vec4 simulation = texture(uSimulation, vSimulationUv);
+    vec4 simulation = texture(uSimulation, clamp(vSimulationUv, vec2(0.0), vec2(1.0)))
+      * vSimulationWindowMask;
     vec3 simulationNormal = normalize(vec3(
       simulation.b * uSimulationNormalStrength,
       1.0,
@@ -361,16 +373,22 @@ const waterFragmentShader = /* glsl */ `
     vec3 openWaterScatter = waterVolumeColor * mix(0.46, 0.78, waterDepthFactor);
     vec3 refraction = mix(openWaterScatter, absorbedScene, bottomVisibility);
 
-    float shoreBand = smoothstep(0.03, 0.22, thickness) * (1.0 - smoothstep(0.68, 2.4, thickness));
+    float screenShoreBand = smoothstep(0.03, 0.24, thickness)
+      * (1.0 - smoothstep(0.72, 2.8, thickness));
+    float breakerBand = smoothstep(0.12, 0.65, verticalWaterDepth)
+      * (1.0 - smoothstep(2.4, 5.8, verticalWaterDepth));
     vec2 foamUv = vWorldPosition.xz * 0.034 + vec2(uTime * 0.12, -uTime * 0.09);
     float foamNoise = fbm21(foamUv) * 0.68 + fbm21(foamUv * 2.15 + 8.3) * 0.32;
-    float simulationFoam = smoothstep(0.002, 0.022, abs(simulation.r));
-    float foamMask = smoothstep(0.54, 0.77, foamNoise + simulationFoam * 0.14);
-    float foam = shoreBand * foamMask * uFoamStrength;
+    float simulationFoam = smoothstep(0.004, 0.026, abs(simulation.r))
+      * vSimulationWindowMask;
+    float brokenWater = screenShoreBand * smoothstep(0.42, 0.72, foamNoise)
+      + breakerBand * smoothstep(0.34, 0.68, foamNoise) * 0.62
+      + simulationFoam * 0.24;
+    float foam = brokenWater * uFoamStrength;
 
     vec3 color = mix(refraction, reflection, fresnel);
     color = mix(color, openOceanColor, waterDepthFactor * (1.0 - fresnel) * 0.12);
-    color = mix(color, vec3(0.82, 0.90, 0.93), clamp(foam * 0.46, 0.0, 0.32));
+    color = mix(color, vec3(0.86, 0.94, 0.95), clamp(foam * 0.68, 0.0, 0.46));
     float deepOpacity = smoothstep(0.08, 0.74, waterDepthFactor);
     float alpha = max(shoreAlpha * mix(0.72, uOpacity, waterDepthFactor), deepOpacity * 0.985);
 
@@ -390,11 +408,14 @@ export class AdvancedWaterSystem {
     this.settings = { ...settings };
     this.generatorSettings = { ...generatorSettings };
     this.elapsed = 0;
-    this.dropTimer = 0;
-    this.randomState = 0x9e3779b9;
     this.bathymetry = createBathymetryData(this.config, this.generatorSettings);
     this.bathymetryTexture = createBathymetryTexture(this.bathymetry);
     this.spatialModel = this.#createSpatialModel();
+    const simulationSnap = 8;
+    this.simulationOrigin = new THREE.Vector2(
+      Math.round(camera.position.x / simulationSnap) * simulationSnap,
+      Math.round(camera.position.z / simulationSnap) * simulationSnap,
+    );
 
     this.simulation = new GpuWaterSimulation(renderer, {
       size: this.settings.simulationResolution,
@@ -431,6 +452,8 @@ export class AdvancedWaterSystem {
         uWaterLevel: { value: config.waterLevel },
         uOceanRadius: { value: this.oceanRadius },
         uSimulationWorldSize: { value: this.settings.simulationWorldSize },
+        uSimulationOrigin: { value: this.simulationOrigin.clone() },
+        uSimulationWindowMask: { value: 1 },
         uWaveAmplitude: { value: this.settings.waveAmplitude },
         uRippleAmplitude: { value: this.settings.rippleAmplitude },
         uHorizonCurvature: { value: this.settings.horizonCurvature },
@@ -462,6 +485,7 @@ export class AdvancedWaterSystem {
       spatialModel: this.spatialModel,
       settings: this.settings,
     });
+    this.impactEffects = new WaterImpactEffects({ scene: this.scene });
     this.aquaticEnvironment = new AquaticEnvironment({
       scene: this.scene,
       spatialModel: this.spatialModel,
@@ -490,13 +514,6 @@ export class AdvancedWaterSystem {
       seed: Number(this.generatorSettings.seed ?? 1337),
       sampleHeight: createTerrainHeightSampler(terrainSettings),
     });
-  }
-
-  #random() {
-    let value = this.randomState += 0x6d2b79f5;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   }
 
   #createCaptureTarget(width, height) {
@@ -581,13 +598,19 @@ export class AdvancedWaterSystem {
 
   update(deltaSeconds, target) {
     this.elapsed += deltaSeconds;
-    this.dropTimer -= deltaSeconds;
-    if (this.settings.dynamicRipples) {
-      this.simulation.update(deltaSeconds);
-      if (this.dropTimer <= 0) {
-        this.simulation.addDrop(this.#random(), this.#random(), 0.012 + this.#random() * 0.024, (this.#random() - 0.5) * 0.012);
-        this.dropTimer = 0.75 + this.#random() * 1.4;
-      }
+    const simulationWorldSize = Math.max(1, Number(this.settings.simulationWorldSize) || 96);
+    const recenterDistance = simulationWorldSize * 0.18;
+    const simulationDeltaX = target.x - this.simulationOrigin.x;
+    const simulationDeltaZ = target.z - this.simulationOrigin.y;
+    if (simulationDeltaX * simulationDeltaX + simulationDeltaZ * simulationDeltaZ
+      > recenterDistance * recenterDistance) {
+      const simulationSnap = 8;
+      this.simulationOrigin.set(
+        Math.round(target.x / simulationSnap) * simulationSnap,
+        Math.round(target.z / simulationSnap) * simulationSnap,
+      );
+      this.material.uniforms.uSimulationOrigin.value.copy(this.simulationOrigin);
+      this.simulation.reset();
     }
     const snap = 32;
     this.mesh.position.x = Math.round(target.x / snap) * snap;
@@ -606,7 +629,26 @@ export class AdvancedWaterSystem {
       this.material.uniforms.uSunColor.value.copy(this.sun.color);
     }
     this.interactions.update(deltaSeconds);
-    this.aquaticEnvironment.update(deltaSeconds);
+    if (this.settings.dynamicRipples) {
+      for (const displacement of this.interactions.consumeDisplacements()) {
+        this.simulation.moveSphere(
+          displacement.previous,
+          displacement.current,
+          displacement.radius,
+          {
+            origin: this.simulationOrigin,
+            waterLevel: this.spatialModel.waterLevel,
+            worldSize: simulationWorldSize,
+            displacementScale: 0.008,
+          },
+        );
+      }
+      this.simulation.update(deltaSeconds);
+    } else {
+      this.interactions.consumeDisplacements();
+    }
+    this.impactEffects.update(deltaSeconds);
+    this.aquaticEnvironment.update(deltaSeconds, target);
     const cameraSurfaceY = sampleWaterSurface(
       this.camera.position.x,
       this.camera.position.z,
@@ -668,6 +710,52 @@ export class AdvancedWaterSystem {
     return this.interactions.getDemoView();
   }
 
+  traceProjectile(projectile) {
+    return this.interactions.traceProjectile(projectile);
+  }
+
+  resetFloatingObjects() {
+    this.interactions.reset();
+  }
+
+  addProjectileRipple(x, z, strength = 0.006, radiusWorld = 0.48) {
+    if (!this.settings.dynamicRipples) return false;
+    const uv = worldToWaterSimulationUv(
+      x,
+      z,
+      this.settings.simulationWorldSize,
+      this.simulationOrigin,
+    );
+    if (!uv || uv.u < 0 || uv.u > 1 || uv.v < 0 || uv.v > 1) return false;
+    this.simulation.addDrop(
+      uv.u,
+      uv.v,
+      waterRadiusToSimulationUv(
+        radiusWorld,
+        this.settings.simulationWorldSize,
+        this.settings.simulationResolution,
+      ),
+      THREE.MathUtils.clamp(Number(strength) || 0.006, -0.012, 0.012),
+    );
+    return true;
+  }
+
+  addProjectileWaterImpact({ x, z, velocity, radius = 0.16, mass = 2.4 } = {}) {
+    const impact = computeProjectileWaterImpact({ velocity, radius, mass });
+    const y = this.getSurfaceHeight(x, z);
+    this.addProjectileRipple(x, z, -impact.rippleStrength, impact.rippleRadius);
+    this.impactEffects.spawn({
+      x,
+      y,
+      z,
+      foamRadius: impact.foamRadius,
+      foamLifetime: impact.foamLifetime,
+      dropletCount: impact.dropletCount,
+      normalSpeed: impact.normalSpeed,
+    });
+    return impact;
+  }
+
   getSurfaceHeight(x, z) {
     return sampleWaterSurface(
       x,
@@ -686,6 +774,7 @@ export class AdvancedWaterSystem {
     this.scene.remove(this.mesh);
     this.interactions.dispose();
     this.aquaticEnvironment.dispose();
+    this.impactEffects.dispose();
     this.underwaterPost.dispose();
     this.simulation.dispose();
     this.captureTarget.dispose();
