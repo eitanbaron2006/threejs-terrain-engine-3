@@ -7,12 +7,36 @@ import {
   addTerrainGraphNode,
   connectTerrainGraphNodes,
   createDefaultTerrainGraph,
+  deriveAquaticSettingsFromTerrainGraph,
   deriveSettingsFromTerrainGraph,
   normalizeTerrainGraph,
   removeTerrainGraphNode,
   syncSettingsToTerrainGraph,
+  syncAquaticSettingsToTerrainGraph,
   validateTerrainGraph,
 } from '../src/terrain/TerrainGraphModel.js';
+
+const AQUATIC_NODE_PROPERTIES = [
+  'enabled',
+  'quality',
+  'habitatDensity',
+  'floatingSpheresEnabled',
+  'floatingSphereCount',
+  'floatingSphereRadius',
+  'waterObjectDensity',
+  'fishEnabled',
+  'fishCount',
+  'fishSchoolDensity',
+  'plantsEnabled',
+  'seagrassCount',
+  'coralsEnabled',
+  'coralCount',
+  'spongesEnabled',
+  'spongeCount',
+  'rocksEnabled',
+  'underwaterRockCount',
+  'vegetationDensity',
+];
 
 const MATERIAL_NODE_TYPES = [
   'material/pack',
@@ -88,6 +112,68 @@ test('default Material Pack uses an explicit project pack id or mediterranean', 
   assert.equal(packId(fromMaterialPack), 'alpine');
   assert.equal(packId(fromPreset), 'volcanic');
   assert.equal(packId(fallback), 'mediterranean');
+});
+
+test('default graph exposes one complete Aquatic Ecosystem control node', () => {
+  const graph = createDefaultTerrainGraph();
+  const nodes = graph.nodes.filter((node) => node.type === 'water/aquaticEcosystem');
+  const definition = TERRAIN_NODE_DEFINITIONS['water/aquaticEcosystem'];
+
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].role, 'aquaticEcosystem');
+  assert.deepEqual(Object.keys(definition.properties), AQUATIC_NODE_PROPERTIES);
+  assert.deepEqual(Object.keys(nodes[0].properties), AQUATIC_NODE_PROPERTIES);
+  assert.deepEqual(definition.inputs, []);
+  assert.deepEqual(definition.outputs, []);
+  assert.deepEqual(validateTerrainGraph(graph), { valid: true, errors: [] });
+});
+
+test('aquatic ecosystem settings synchronize to the graph and derive back', () => {
+  const initial = createDefaultTerrainGraph();
+  const graph = syncAquaticSettingsToTerrainGraph(initial, {
+    aquaticLifeEnabled: false,
+    habitatQuality: 'medium',
+    habitatDensity: 1.35,
+    floatingSpheresEnabled: false,
+    floatingSphereCount: 7,
+    floatingSphereRadius: 2.4,
+    waterObjectDensity: 0.72,
+    fishEnabled: false,
+    fishCount: 64,
+    fishSchoolDensity: 1.4,
+    plantsEnabled: true,
+    seagrassCount: 180,
+    coralsEnabled: false,
+    coralCount: 9,
+    spongesEnabled: true,
+    spongeCount: 16,
+    rocksEnabled: false,
+    underwaterRockCount: 22,
+    vegetationDensity: 1.25,
+  });
+  const derived = deriveAquaticSettingsFromTerrainGraph(graph, {});
+
+  assert.deepEqual(derived, {
+    aquaticLifeEnabled: false,
+    habitatQuality: 'medium',
+    habitatDensity: 1.35,
+    floatingSpheresEnabled: false,
+    floatingSphereCount: 7,
+    floatingSphereRadius: 2.4,
+    waterObjectDensity: 0.72,
+    fishEnabled: false,
+    fishCount: 64,
+    fishSchoolDensity: 1.4,
+    plantsEnabled: true,
+    seagrassCount: 180,
+    coralsEnabled: false,
+    coralCount: 9,
+    spongesEnabled: true,
+    spongeCount: 16,
+    rocksEnabled: false,
+    underwaterRockCount: 22,
+    vegetationDensity: 1.25,
+  });
 });
 
 test('material and mask node schemas expose complete typed UI metadata', () => {
@@ -608,6 +694,7 @@ test('catalog exposes every node required by the terrain and material pipelines'
     'transform/domainWarp',
     'transform/remap',
     'transform/terrace',
+    'water/aquaticEcosystem',
     'world/coordinates',
   ]);
 });

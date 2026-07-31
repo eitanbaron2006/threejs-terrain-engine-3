@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { AquaticEnvironment } from '../src/water/AquaticEnvironment.js';
 import { WaterSpatialModel } from '../src/water/WaterSpatialModel.js';
 
-function createEnvironment() {
+function createEnvironment(overrides = {}) {
   const scene = new THREE.Scene();
   const spatialModel = new WaterSpatialModel({
     worldSize: 1800,
@@ -21,6 +21,17 @@ function createEnvironment() {
       fishSchoolDensity: 1,
       vegetationDensity: 1,
       habitatQuality: 'high',
+      fishEnabled: true,
+      plantsEnabled: true,
+      coralsEnabled: true,
+      spongesEnabled: true,
+      rocksEnabled: true,
+      fishCount: 30,
+      seagrassCount: 120,
+      coralCount: 18,
+      spongeCount: 12,
+      underwaterRockCount: 24,
+      ...overrides,
     },
     loadAsset: async () => null,
   });
@@ -35,6 +46,39 @@ test('aquatic environment starts with a dense active demo habitat', () => {
   assert.ok(diagnostics.vegetation >= 180);
   assert.ok(diagnostics.coralMorphologies >= 3);
 
+  environment.dispose();
+});
+
+test('zero model amounts remove fish and every seabed model family', () => {
+  const environment = createEnvironment({
+    fishCount: 0,
+    seagrassCount: 0,
+    coralCount: 0,
+    spongeCount: 0,
+    underwaterRockCount: 0,
+  });
+
+  assert.equal(environment.getDiagnostics().fish, 0);
+  assert.equal(environment.getDiagnostics().vegetation, 0);
+  assert.equal(environment.batchMeshes.some((mesh) => mesh.name.startsWith('AquaticHabitat:')), false);
+  environment.dispose();
+});
+
+test('per-family visibility removes only the disabled aquatic model families', () => {
+  const environment = createEnvironment({
+    fishEnabled: false,
+    plantsEnabled: false,
+    coralsEnabled: false,
+    spongesEnabled: true,
+    rocksEnabled: true,
+  });
+  const habitatNames = environment.batchMeshes.map((mesh) => mesh.name);
+
+  assert.equal(environment.getDiagnostics().fish, 0);
+  assert.equal(habitatNames.some((name) => /grass|kelp/.test(name)), false);
+  assert.equal(habitatNames.some((name) => name.includes('coral')), false);
+  assert.equal(habitatNames.some((name) => name.includes('sponge')), true);
+  assert.equal(habitatNames.some((name) => name.includes('rock')), true);
   environment.dispose();
 });
 

@@ -53,6 +53,28 @@ test('terrain node registration initializes missing LiteGraph link colors', () =
   assert.equal(liteGraph.link_type_colors.mask, '#d3a54d');
 });
 
+test('Aquatic Ecosystem registers as a distinct water control node', () => {
+  const registrations = {};
+  const liteGraph = {
+    registerNodeType(type, constructor) {
+      registrations[type] = constructor;
+    },
+  };
+  registerTerrainNodeTypes(liteGraph);
+  const instance = {
+    addInput() {},
+    addOutput() {},
+    addWidget() {},
+    computeSize: () => [220, 420],
+  };
+
+  registrations['water/aquaticEcosystem'].call(instance);
+
+  assert.equal(registrations['water/aquaticEcosystem'].title, 'Aquatic Ecosystem');
+  assert.equal(instance.color, '#173c46');
+  assert.equal(instance.boxcolor, '#38b9c7');
+});
+
 test('material inspector exposes schema-driven combo and bounded number fields', () => {
   const model = buildTerrainNodeInspectorModel({
     id: 20,

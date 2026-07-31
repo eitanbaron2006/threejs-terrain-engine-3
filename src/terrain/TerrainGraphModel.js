@@ -107,6 +107,28 @@ const BIOME_BLEND_PROPERTIES = {
   strength: numberProperty('Strength', 1, 0, 1, 0.01),
 };
 
+const AQUATIC_ECOSYSTEM_PROPERTIES = {
+  enabled: toggleProperty('Show Ecosystem', true),
+  quality: comboProperty('Habitat Quality', 'high', ['low', 'medium', 'high']),
+  habitatDensity: numberProperty('Habitat Density', 1, 0.25, 2, 0.05),
+  floatingSpheresEnabled: toggleProperty('Show Floating Spheres', true),
+  floatingSphereCount: numberProperty('Floating Spheres', 12, 0, 24, 1),
+  floatingSphereRadius: numberProperty('Sphere Radius', 3.2, 0.8, 8, 0.1),
+  waterObjectDensity: numberProperty('Sphere Density', 0.58, 0.2, 1.4, 0.01),
+  fishEnabled: toggleProperty('Show Fish', true),
+  fishCount: numberProperty('Fish Amount', 30, 0, 48, 1),
+  fishSchoolDensity: numberProperty('School Density', 1, 0.1, 2, 0.05),
+  plantsEnabled: toggleProperty('Show Plants', true),
+  seagrassCount: numberProperty('Plant Amount', 120, 0, 180, 5),
+  coralsEnabled: toggleProperty('Show Corals', true),
+  coralCount: numberProperty('Coral Amount', 18, 0, 24, 1),
+  spongesEnabled: toggleProperty('Show Sponges', true),
+  spongeCount: numberProperty('Sponge Amount', 12, 0, 24, 1),
+  rocksEnabled: toggleProperty('Show Seabed Rocks', true),
+  underwaterRockCount: numberProperty('Seabed Rock Amount', 24, 0, 48, 1),
+  vegetationDensity: numberProperty('Seabed Model Density', 1, 0.1, 2, 0.05),
+};
+
 export const TERRAIN_NODE_DEFINITIONS = deepFreeze({
   'world/coordinates': {
     title: 'World Coordinates',
@@ -239,6 +261,12 @@ export const TERRAIN_NODE_DEFINITIONS = deepFreeze({
     inputs: [materialInput(), maskInput()],
     outputs: [output('material', 'Material', 'material')],
   }, BIOME_BLEND_PROPERTIES),
+  'water/aquaticEcosystem': materialNodeDefinition({
+    title: 'Aquatic Ecosystem',
+    category: 'Water',
+    inputs: [],
+    outputs: [],
+  }, AQUATIC_ECOSYSTEM_PROPERTIES),
   'terrain/output': {
     title: 'Terrain Output',
     category: 'Output',
@@ -389,6 +417,33 @@ function packIdFromSettings(settings = {}) {
   return 'mediterranean';
 }
 
+function aquaticPropertiesFromSettings(settings = {}) {
+  const defaults = defaultsFromProperties(AQUATIC_ECOSYSTEM_PROPERTIES);
+  return {
+    enabled: settings.aquaticLifeEnabled ?? defaults.enabled,
+    quality: ['low', 'medium', 'high'].includes(settings.habitatQuality)
+      ? settings.habitatQuality
+      : defaults.quality,
+    habitatDensity: finite(settings.habitatDensity, defaults.habitatDensity),
+    floatingSpheresEnabled: settings.floatingSpheresEnabled ?? defaults.floatingSpheresEnabled,
+    floatingSphereCount: finite(settings.floatingSphereCount, defaults.floatingSphereCount),
+    floatingSphereRadius: finite(settings.floatingSphereRadius, defaults.floatingSphereRadius),
+    waterObjectDensity: finite(settings.waterObjectDensity, defaults.waterObjectDensity),
+    fishEnabled: settings.fishEnabled ?? defaults.fishEnabled,
+    fishCount: finite(settings.fishCount, defaults.fishCount),
+    fishSchoolDensity: finite(settings.fishSchoolDensity, defaults.fishSchoolDensity),
+    plantsEnabled: settings.plantsEnabled ?? defaults.plantsEnabled,
+    seagrassCount: finite(settings.seagrassCount, defaults.seagrassCount),
+    coralsEnabled: settings.coralsEnabled ?? defaults.coralsEnabled,
+    coralCount: finite(settings.coralCount, defaults.coralCount),
+    spongesEnabled: settings.spongesEnabled ?? defaults.spongesEnabled,
+    spongeCount: finite(settings.spongeCount, defaults.spongeCount),
+    rocksEnabled: settings.rocksEnabled ?? defaults.rocksEnabled,
+    underwaterRockCount: finite(settings.underwaterRockCount, defaults.underwaterRockCount),
+    vegetationDensity: finite(settings.vegetationDensity, defaults.vegetationDensity),
+  };
+}
+
 export function createDefaultTerrainGraph(settings = {}) {
   const values = buildDefaultProperties(settings);
   const graph = {
@@ -458,6 +513,13 @@ export function createDefaultTerrainGraph(settings = {}) {
     packId: packIdFromSettings(settings),
   }, 'materialPack');
   const materialOutput = appendNode(graph, 'terrain/materialOutput', [1660, 250], {}, 'output');
+  appendNode(
+    graph,
+    'water/aquaticEcosystem',
+    [1660, 500],
+    aquaticPropertiesFromSettings(settings),
+    'aquaticEcosystem',
+  );
 
   appendLink(graph, coordinates.id, 'coordinate', warp.id, 'coordinate');
   appendLink(graph, warp.id, 'coordinate', broad.id, 'coordinate');
@@ -759,6 +821,54 @@ export function syncSettingsToTerrainGraph(graph, settings = {}) {
     oceanDepth: values.oceanDepth,
   });
   return next;
+}
+
+export function syncAquaticSettingsToTerrainGraph(graph, settings = {}) {
+  const next = cloneTerrainGraph(graph);
+  let aquatic = next.nodes.find((candidate) => (
+    candidate.role === 'aquaticEcosystem' || candidate.type === 'water/aquaticEcosystem'
+  ));
+  if (!aquatic) {
+    aquatic = appendNode(
+      next,
+      'water/aquaticEcosystem',
+      [1660, 500],
+      {},
+      'aquaticEcosystem',
+    );
+  }
+  aquatic.role = 'aquaticEcosystem';
+  const current = deriveAquaticSettingsFromTerrainGraph(next, settings);
+  aquatic.properties = aquaticPropertiesFromSettings({ ...current, ...settings });
+  return next;
+}
+
+export function deriveAquaticSettingsFromTerrainGraph(graph, fallbackSettings = {}) {
+  const aquatic = graph?.nodes?.find((candidate) => (
+    candidate.role === 'aquaticEcosystem' || candidate.type === 'water/aquaticEcosystem'
+  ))?.properties;
+  const values = aquatic ?? aquaticPropertiesFromSettings(fallbackSettings);
+  return {
+    aquaticLifeEnabled: Boolean(values.enabled),
+    habitatQuality: ['low', 'medium', 'high'].includes(values.quality) ? values.quality : 'high',
+    habitatDensity: finite(values.habitatDensity, 1),
+    floatingSpheresEnabled: Boolean(values.floatingSpheresEnabled),
+    floatingSphereCount: Math.max(0, Math.round(finite(values.floatingSphereCount, 12))),
+    floatingSphereRadius: finite(values.floatingSphereRadius, 3.2),
+    waterObjectDensity: finite(values.waterObjectDensity, 0.58),
+    fishEnabled: Boolean(values.fishEnabled),
+    fishCount: Math.max(0, Math.round(finite(values.fishCount, 30))),
+    fishSchoolDensity: finite(values.fishSchoolDensity, 1),
+    plantsEnabled: Boolean(values.plantsEnabled),
+    seagrassCount: Math.max(0, Math.round(finite(values.seagrassCount, 120))),
+    coralsEnabled: Boolean(values.coralsEnabled),
+    coralCount: Math.max(0, Math.round(finite(values.coralCount, 18))),
+    spongesEnabled: Boolean(values.spongesEnabled),
+    spongeCount: Math.max(0, Math.round(finite(values.spongeCount, 12))),
+    rocksEnabled: Boolean(values.rocksEnabled),
+    underwaterRockCount: Math.max(0, Math.round(finite(values.underwaterRockCount, 24))),
+    vegetationDensity: finite(values.vegetationDensity, 1),
+  };
 }
 
 export function deriveSettingsFromTerrainGraph(graph, fallbackSettings = {}) {

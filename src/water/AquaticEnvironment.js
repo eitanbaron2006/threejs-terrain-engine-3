@@ -278,8 +278,10 @@ export class AquaticEnvironment {
   }
 
   #createSchoolFish(zones) {
+    if (this.settings.fishEnabled === false || Number(this.settings.fishCount ?? 30) <= 0) return;
     const quality = qualitySettings(this.settings);
-    const density = clamp(finite(this.settings.fishSchoolDensity, 1), 0.1, 2);
+    const density = clamp(finite(this.settings.fishSchoolDensity, 1), 0.1, 2)
+      * clamp(finite(this.settings.fishCount, 30) / 30, 0, 1.6);
     const requested = Math.min(
       quality.fishLimit,
       Math.max(0, Math.round(zones.reduce((sum, zone) => sum + zone.fishTarget, 0) * density)),
@@ -354,30 +356,48 @@ export class AquaticEnvironment {
   #createHabitatInstances(zones) {
     const quality = qualitySettings(this.settings);
     const density = clamp(finite(this.settings.vegetationDensity, 1), 0.1, 2);
-    const total = Math.min(
+    const baseTotal = Math.min(
       quality.vegetationLimit,
       Math.max(0, Math.round(
         zones.reduce((sum, zone) => sum + zone.vegetationTarget, 0) * density,
       )),
     );
-    if (!total) return;
+    if (!baseTotal) return;
 
-    const descriptors = [
-      ...this.geometryKit.plants,
-      ...this.geometryKit.corals,
-      ...this.geometryKit.sponges,
-      ...this.geometryKit.rocks,
+    const families = [
+      {
+        id: 'plants', descriptors: this.geometryKit.plants, enabled: this.settings.plantsEnabled !== false,
+        amount: finite(this.settings.seagrassCount, 120), baseline: 120, share: 0.56,
+      },
+      {
+        id: 'corals', descriptors: this.geometryKit.corals, enabled: this.settings.coralsEnabled !== false,
+        amount: finite(this.settings.coralCount, 18), baseline: 18, share: 0.2,
+      },
+      {
+        id: 'sponges', descriptors: this.geometryKit.sponges, enabled: this.settings.spongesEnabled !== false,
+        amount: finite(this.settings.spongeCount, 12), baseline: 12, share: 0.1,
+      },
+      {
+        id: 'rocks', descriptors: this.geometryKit.rocks, enabled: this.settings.rocksEnabled !== false,
+        amount: finite(this.settings.underwaterRockCount, 24), baseline: 24, share: 0.14,
+      },
     ];
+    const activeFamilies = families.filter((family) => family.enabled && family.amount > 0);
+    if (!activeFamilies.length) return;
+    const desiredByFamily = new Map(activeFamilies.map((family) => [
+      family.id,
+      Math.max(1, Math.round(baseTotal * family.share * (family.amount / family.baseline))),
+    ]));
+    const desiredTotal = [...desiredByFamily.values()].reduce((sum, count) => sum + count, 0);
+    const budgetScale = Math.min(1, quality.vegetationLimit / Math.max(1, desiredTotal));
+    const descriptors = activeFamilies.flatMap((family) => family.descriptors);
     const counts = new Map(descriptors.map((item) => [item.id, 0]));
-    for (let index = 0; index < total; index += 1) {
-      const zone = zones[index % zones.length];
-      const candidates = zone.habitatClass === 'reef'
-        ? descriptors
-        : zone.habitatClass === 'grass-bed'
-          ? [...this.geometryKit.plants, ...this.geometryKit.rocks]
-          : this.geometryKit.rocks;
-      const item = candidates[index % candidates.length];
-      counts.set(item.id, counts.get(item.id) + 1);
+    for (const family of activeFamilies) {
+      const familyTotal = Math.max(1, Math.round(desiredByFamily.get(family.id) * budgetScale));
+      for (let index = 0; index < familyTotal; index += 1) {
+        const item = family.descriptors[index % family.descriptors.length];
+        counts.set(item.id, counts.get(item.id) + 1);
+      }
     }
 
     const random = createRandom(this.spatialModel.seed + 3701 + zones.length * 151);
@@ -434,14 +454,22 @@ export class AquaticEnvironment {
       mesh.instanceColor.needsUpdate = true;
       mesh.computeBoundingSphere();
     }
-    this.vegetationCount = total;
+    this.vegetationCount = [...counts.values()].reduce((sum, count) => sum + count, 0);
   }
 
   #rebuildHeroFish() {
     this.#clearHeroes();
     const zones = this.#activeZones();
-    if (!zones.length || !this.heroTemplates.size) return;
-    const limit = qualitySettings(this.settings).heroLimit;
+    if (
+      !zones.length
+      || !this.heroTemplates.size
+      || this.settings.fishEnabled === false
+      || Number(this.settings.fishCount ?? 30) <= 0
+    ) return;
+    const limit = Math.round(
+      qualitySettings(this.settings).heroLimit
+      * clamp(finite(this.settings.fishCount, 30) / 30, 0, 1.6),
+    );
     const random = createRandom(this.spatialModel.seed + 9929 + zones.length * 211);
     const compatible = [];
     for (const zone of zones) {
@@ -567,6 +595,13 @@ export class AquaticEnvironment {
       || settings.fishSchoolDensity !== this.settings.fishSchoolDensity
       || settings.vegetationDensity !== this.settings.vegetationDensity
       || settings.habitatQuality !== this.settings.habitatQuality
+      || settings.fishEnabled !== this.settings.fishEnabled
+      || settings.plantsEnabled !== this.settings.plantsEnabled
+      || settings.coralsEnabled !== this.settings.coralsEnabled
+      || settings.spongesEnabled !== this.settings.spongesEnabled
+      || settings.rocksEnabled !== this.settings.rocksEnabled
+      || settings.spongeCount !== this.settings.spongeCount
+      || settings.underwaterRockCount !== this.settings.underwaterRockCount
     );
     this.settings = { ...settings };
     this.group.visible = this.settings.aquaticLifeEnabled !== false;

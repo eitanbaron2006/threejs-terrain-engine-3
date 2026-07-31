@@ -33,9 +33,11 @@ import { getEnvironmentPreset } from '../environment/EnvironmentPresets.js';
 import { TerrainMaterialPackManager } from '../terrain/TerrainMaterialPackManager.js';
 import {
   createDefaultTerrainGraph,
+  deriveAquaticSettingsFromTerrainGraph,
   deriveSettingsFromTerrainGraph,
   normalizeTerrainGraph,
   syncSettingsToTerrainGraph,
+  syncAquaticSettingsToTerrainGraph,
   validateTerrainGraph,
 } from '../terrain/TerrainGraphModel.js';
 import { compileTerrainGraph, compileTerrainPipeline } from '../terrain/TerrainGraphCompiler.js';
@@ -53,6 +55,7 @@ export class TerrainEditorApp {
     this.generatorSettings = { ...DEFAULT_GENERATOR_SETTINGS };
     this.terrainGraph = createDefaultTerrainGraph({
       ...this.generatorSettings,
+      ...DEFAULT_WATER_SETTINGS,
       worldRadius: this.config.worldSizeKm * 500,
       waterLevel: this.config.waterLevel,
     });
@@ -151,6 +154,11 @@ export class TerrainEditorApp {
         const derived = deriveSettingsFromTerrainGraph(graph, this.generatorSettings);
         Object.assign(this.generatorSettings, derived);
         this.ui.syncGeneratorSettings(derived);
+        const aquaticSettings = deriveAquaticSettingsFromTerrainGraph(graph, this.waterSettings);
+        Object.assign(this.waterSettings, aquaticSettings);
+        this.waterSystem.applySettings(this.waterSettings);
+        this.projectileSystem.applySettings(this.waterSettings);
+        this.ui.syncWaterSettings(this.waterSettings);
         this.terrainGraphPreview.request(graph, {
           ...this.generatorSettings,
           worldRadius: this.config.worldSizeKm * 500,
@@ -426,6 +434,8 @@ export class TerrainEditorApp {
     });
     this.ui.on('water-settings', (settings) => {
       Object.assign(this.waterSettings, settings);
+      this.terrainGraph = syncAquaticSettingsToTerrainGraph(this.terrainGraph, this.waterSettings);
+      this.terrainGraphEditor.setGraph(this.terrainGraph, { recordHistory: true });
       this.waterSystem.applySettings(this.waterSettings);
       this.projectileSystem.applySettings(this.waterSettings);
       this.#resize();
@@ -954,12 +964,17 @@ export class TerrainEditorApp {
       }
       const graphFallbackSettings = {
         ...(project.generatorSettings ?? this.generatorSettings),
+        ...(project.waterSettings ?? this.waterSettings),
         worldRadius: this.config.worldSizeKm * 500,
         waterLevel: this.config.waterLevel,
       };
-      const importedGraph = normalizeTerrainGraph(
+      const normalizedGraph = normalizeTerrainGraph(
         project.terrainGraph ?? createDefaultTerrainGraph(graphFallbackSettings),
         graphFallbackSettings,
+      );
+      const importedGraph = syncAquaticSettingsToTerrainGraph(
+        normalizedGraph,
+        deriveAquaticSettingsFromTerrainGraph(normalizedGraph, graphFallbackSettings),
       );
       const graphValidation = validateTerrainGraph(importedGraph);
       if (!graphValidation.valid) {
@@ -995,12 +1010,14 @@ export class TerrainEditorApp {
         this.materialLibrary.applySettings(this.materialSettings);
         this.ui.syncMaterialSettings(this.materialSettings);
       }
-      if (result.waterSettings) {
-        Object.assign(this.waterSettings, result.waterSettings);
-        this.waterSystem.applySettings(this.waterSettings);
-        this.projectileSystem.applySettings(this.waterSettings);
-        this.ui.syncWaterSettings(this.waterSettings);
-      }
+      const importedAquaticSettings = deriveAquaticSettingsFromTerrainGraph(
+        this.terrainGraph,
+        result.waterSettings ?? this.waterSettings,
+      );
+      Object.assign(this.waterSettings, result.waterSettings ?? {}, importedAquaticSettings);
+      this.waterSystem.applySettings(this.waterSettings);
+      this.projectileSystem.applySettings(this.waterSettings);
+      this.ui.syncWaterSettings(this.waterSettings);
       if (result.environmentSettings) {
         this.environmentSettings = { ...this.environmentSettings, ...result.environmentSettings };
         await this.environmentSystem.applySettings(this.environmentSettings, { reloadEnvironment: true });

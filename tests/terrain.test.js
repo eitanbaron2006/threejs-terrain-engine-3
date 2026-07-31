@@ -977,6 +977,23 @@ test('Sky Studio exposes runtime HDRI and sun controls', async () => {
   assert.match(environment, /applySettings/);
 });
 
+test('Aquatic Ecosystem node and legacy water controls stay synchronized', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const ui = await readFile(new URL('../src/ui/EditorUI.js', import.meta.url), 'utf8');
+  const app = await readFile(new URL('../src/app/TerrainEditorApp.js', import.meta.url), 'utf8');
+
+  assert.match(ui, /water\/aquaticEcosystem/);
+  assert.match(ui, /water-fish-enabled/);
+  assert.match(ui, /water-plants-enabled/);
+  assert.match(ui, /water-corals-enabled/);
+  assert.match(ui, /water-sponges-enabled/);
+  assert.match(ui, /water-rocks-enabled/);
+  assert.match(ui, /water-sponge-count/);
+  assert.match(ui, /water-rock-count/);
+  assert.match(app, /deriveAquaticSettingsFromTerrainGraph/);
+  assert.match(app, /syncAquaticSettingsToTerrainGraph/);
+});
+
 test('settings sidebar can collapse and restore without hiding the terrain workspace controls', async () => {
   const { readFile } = await import('node:fs/promises');
   const ui = await readFile(new URL('../src/ui/EditorUI.js', import.meta.url), 'utf8');

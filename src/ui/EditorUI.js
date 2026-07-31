@@ -63,6 +63,7 @@ export class EditorUI {
       'transform/terrace',
       'combine/add',
       'shape/islandCoast',
+      'water/aquaticEcosystem',
       'terrain/output',
     ];
 
@@ -151,6 +152,8 @@ export class EditorUI {
                 ${this.#range('water-foam', 'קצף חוף', this.waterSettings.foamStrength, 0, 1, 0.01)}
                 ${this.#range('water-curvature', 'עקמומיות אופק', this.waterSettings.horizonCurvature, 0, 110, 1)}
                 <label class="toggle"><input id="water-floating-spheres" type="checkbox" ${this.waterSettings.floatingSpheresEnabled ? 'checked' : ''}><span>כדורי בדיקת ציפה</span></label>
+                ${this.#range('water-floating-sphere-count', 'כמות כדורים צפים', this.waterSettings.floatingSphereCount ?? 12, 0, 24, 1)}
+                ${this.#range('water-floating-sphere-radius', 'רדיוס כדור צף', this.waterSettings.floatingSphereRadius ?? 3.2, 0.8, 8, 0.1)}
                 ${this.#range('water-object-density', 'צפיפות אובייקטים צפים', this.waterSettings.waterObjectDensity, 0.2, 1.4, 0.01)}
                 <label class="toggle"><input id="water-aquatic-life" type="checkbox" ${this.waterSettings.aquaticLifeEnabled ? 'checked' : ''}><span>דגים, עשב ים ואלמוגים</span></label>
                 <label class="field"><span>איכות בית הגידול</span><select id="water-habitat-quality">
@@ -161,9 +164,16 @@ export class EditorUI {
                 ${this.#range('water-habitat-density', 'צפיפות כללית של בתי גידול', this.waterSettings.habitatDensity ?? 1, 0.25, 2, 0.05)}
                 ${this.#range('water-fish-school-density', 'צפיפות להקות דגים', this.waterSettings.fishSchoolDensity ?? 1, 0.1, 2, 0.05)}
                 ${this.#range('water-vegetation-density', 'צפיפות צמחייה ואלמוגים', this.waterSettings.vegetationDensity ?? 1, 0.1, 2, 0.05)}
+                <label class="toggle"><input id="water-fish-enabled" type="checkbox" ${this.waterSettings.fishEnabled !== false ? 'checked' : ''}><span>הצג דגים</span></label>
                 ${this.#range('water-fish-count', 'כמות דגים', this.waterSettings.fishCount, 0, 48, 2)}
+                <label class="toggle"><input id="water-plants-enabled" type="checkbox" ${this.waterSettings.plantsEnabled !== false ? 'checked' : ''}><span>הצג צמחייה תת־ימית</span></label>
                 ${this.#range('water-seagrass-count', 'כמות עשב ים', this.waterSettings.seagrassCount, 0, 180, 10)}
+                <label class="toggle"><input id="water-corals-enabled" type="checkbox" ${this.waterSettings.coralsEnabled !== false ? 'checked' : ''}><span>הצג אלמוגים</span></label>
                 ${this.#range('water-coral-count', 'כמות אלמוגים', this.waterSettings.coralCount, 0, 24, 1)}
+                <label class="toggle"><input id="water-sponges-enabled" type="checkbox" ${this.waterSettings.spongesEnabled !== false ? 'checked' : ''}><span>הצג ספוגים</span></label>
+                ${this.#range('water-sponge-count', 'כמות ספוגים', this.waterSettings.spongeCount ?? 12, 0, 24, 1)}
+                <label class="toggle"><input id="water-rocks-enabled" type="checkbox" ${this.waterSettings.rocksEnabled !== false ? 'checked' : ''}><span>הצג סלעי קרקעית</span></label>
+                ${this.#range('water-rock-count', 'כמות סלעי קרקעית', this.waterSettings.underwaterRockCount ?? 24, 0, 48, 1)}
                 <label class="toggle"><input id="water-underwater-optics" type="checkbox" ${this.waterSettings.underwaterOpticsEnabled ? 'checked' : ''}><span>אופטיקה תת־ימית</span></label>
                 ${this.#range('water-optical-density', 'צפיפות אופטית במים', this.waterSettings.underwaterOpticalDensity, 0.45, 1.8, 0.05)}
                 <label class="toggle"><input id="water-fps-projectiles" type="checkbox" ${this.waterSettings.fpsProjectilesEnabled !== false ? 'checked' : ''}><span>קליעים פיזיקליים במצב FPS</span></label>
@@ -493,7 +503,17 @@ export class EditorUI {
       });
     }
     this.root.querySelector('#dynamic-ripples').addEventListener('change', () => this.emit('water-settings', this.getWaterSettings()));
-    for (const id of ['water-floating-spheres', 'water-aquatic-life', 'water-underwater-optics', 'water-fps-projectiles']) {
+    for (const id of [
+      'water-floating-spheres',
+      'water-aquatic-life',
+      'water-fish-enabled',
+      'water-plants-enabled',
+      'water-corals-enabled',
+      'water-sponges-enabled',
+      'water-rocks-enabled',
+      'water-underwater-optics',
+      'water-fps-projectiles',
+    ]) {
       this.root.querySelector(`#${id}`).addEventListener('change', () => this.emit('water-settings', this.getWaterSettings()));
     }
     this.root.querySelector('#water-habitat-quality').addEventListener('change', () => this.emit('water-settings', this.getWaterSettings()));
@@ -506,12 +526,16 @@ export class EditorUI {
       'water-foam',
       'water-curvature',
       'water-object-density',
+      'water-floating-sphere-count',
+      'water-floating-sphere-radius',
       'water-habitat-density',
       'water-fish-school-density',
       'water-vegetation-density',
       'water-fish-count',
       'water-seagrass-count',
       'water-coral-count',
+      'water-sponge-count',
+      'water-rock-count',
       'water-optical-density',
       'water-projectile-speed',
       'water-projectile-mass',
@@ -672,15 +696,24 @@ export class EditorUI {
       foamStrength: Number(this.root.querySelector('#water-foam').value),
       horizonCurvature: Number(this.root.querySelector('#water-curvature').value),
       floatingSpheresEnabled: this.root.querySelector('#water-floating-spheres').checked,
+      floatingSphereCount: Number(this.root.querySelector('#water-floating-sphere-count').value),
+      floatingSphereRadius: Number(this.root.querySelector('#water-floating-sphere-radius').value),
       waterObjectDensity: Number(this.root.querySelector('#water-object-density').value),
       aquaticLifeEnabled: this.root.querySelector('#water-aquatic-life').checked,
       habitatQuality: this.root.querySelector('#water-habitat-quality').value,
       habitatDensity: Number(this.root.querySelector('#water-habitat-density').value),
       fishSchoolDensity: Number(this.root.querySelector('#water-fish-school-density').value),
       vegetationDensity: Number(this.root.querySelector('#water-vegetation-density').value),
+      fishEnabled: this.root.querySelector('#water-fish-enabled').checked,
       fishCount: Number(this.root.querySelector('#water-fish-count').value),
+      plantsEnabled: this.root.querySelector('#water-plants-enabled').checked,
       seagrassCount: Number(this.root.querySelector('#water-seagrass-count').value),
+      coralsEnabled: this.root.querySelector('#water-corals-enabled').checked,
       coralCount: Number(this.root.querySelector('#water-coral-count').value),
+      spongesEnabled: this.root.querySelector('#water-sponges-enabled').checked,
+      spongeCount: Number(this.root.querySelector('#water-sponge-count').value),
+      rocksEnabled: this.root.querySelector('#water-rocks-enabled').checked,
+      underwaterRockCount: Number(this.root.querySelector('#water-rock-count').value),
       underwaterOpticsEnabled: this.root.querySelector('#water-underwater-optics').checked,
       underwaterOpticalDensity: Number(this.root.querySelector('#water-optical-density').value),
       fpsProjectilesEnabled: this.root.querySelector('#water-fps-projectiles').checked,
@@ -865,6 +898,11 @@ export class EditorUI {
     this.root.querySelector('#dynamic-ripples').checked = settings.dynamicRipples;
     this.root.querySelector('#water-floating-spheres').checked = settings.floatingSpheresEnabled;
     this.root.querySelector('#water-aquatic-life').checked = settings.aquaticLifeEnabled;
+    this.root.querySelector('#water-fish-enabled').checked = settings.fishEnabled !== false;
+    this.root.querySelector('#water-plants-enabled').checked = settings.plantsEnabled !== false;
+    this.root.querySelector('#water-corals-enabled').checked = settings.coralsEnabled !== false;
+    this.root.querySelector('#water-sponges-enabled').checked = settings.spongesEnabled !== false;
+    this.root.querySelector('#water-rocks-enabled').checked = settings.rocksEnabled !== false;
     this.root.querySelector('#water-underwater-optics').checked = settings.underwaterOpticsEnabled;
     this.root.querySelector('#water-fps-projectiles').checked = settings.fpsProjectilesEnabled !== false;
     this.root.querySelector('#water-habitat-quality').value = settings.habitatQuality ?? 'high';
@@ -877,12 +915,16 @@ export class EditorUI {
       ['water-foam', settings.foamStrength],
       ['water-curvature', settings.horizonCurvature],
       ['water-object-density', settings.waterObjectDensity],
+      ['water-floating-sphere-count', settings.floatingSphereCount ?? 12],
+      ['water-floating-sphere-radius', settings.floatingSphereRadius ?? 3.2],
       ['water-habitat-density', settings.habitatDensity ?? 1],
       ['water-fish-school-density', settings.fishSchoolDensity ?? 1],
       ['water-vegetation-density', settings.vegetationDensity ?? 1],
       ['water-fish-count', settings.fishCount],
       ['water-seagrass-count', settings.seagrassCount],
       ['water-coral-count', settings.coralCount],
+      ['water-sponge-count', settings.spongeCount ?? 12],
+      ['water-rock-count', settings.underwaterRockCount ?? 24],
       ['water-optical-density', settings.underwaterOpticalDensity],
       ['water-projectile-speed', settings.projectileSpeed ?? 70],
       ['water-projectile-mass', settings.projectileMass ?? 2.4],

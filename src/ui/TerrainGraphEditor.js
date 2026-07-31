@@ -13,6 +13,7 @@ const CATEGORY_COLORS = Object.freeze({
   Shape: ['#49342c', '#d9825b'],
   Materials: ['#49342c', '#d9825b'],
   Masks: ['#3c3527', '#d3a54d'],
+  Water: ['#173c46', '#38b9c7'],
   Output: ['#263d3a', '#4fd4bd'],
 });
 
