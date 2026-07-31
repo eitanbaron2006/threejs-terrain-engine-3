@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { createTerrainHeightSampler } from '../terrain/noise.js';
 import { AquaticEnvironment } from './AquaticEnvironment.js';
 import { GpuWaterSimulation } from './GpuWaterSimulation.js';
-import { WaterInteractionSystem } from './WaterInteractionSystem.js';
+import { UnderwaterPostProcess } from './UnderwaterPostProcess.js';
+import { sampleWaterSurface, WaterInteractionSystem } from './WaterInteractionSystem.js';
 import { WaterSpatialModel } from './WaterSpatialModel.js';
 
 const BATHYMETRY_RESOLUTION = 384;
@@ -467,6 +468,12 @@ export class AdvancedWaterSystem {
       settings: this.settings,
     });
     this.#createCaptureTarget(1, 1);
+    this.underwaterPost = new UnderwaterPostProcess({
+      renderer: this.renderer,
+      camera: this.camera,
+      waterLevel: this.config.waterLevel,
+      settings: this.settings,
+    });
   }
 
   #createSpatialModel() {
@@ -546,6 +553,7 @@ export class AdvancedWaterSystem {
     if (this.captureTarget.width !== targetWidth || this.captureTarget.height !== targetHeight) {
       this.#createCaptureTarget(targetWidth, targetHeight);
     }
+    this.underwaterPost.resize(width, height, pixelRatio);
   }
 
   setPresentationMode() {
@@ -568,6 +576,7 @@ export class AdvancedWaterSystem {
     uniforms.uDeepColor.value.set(this.settings.deepColor);
     this.interactions.applySettings(this.settings);
     this.aquaticEnvironment.applySettings(this.settings);
+    this.underwaterPost.applySettings(this.settings);
   }
 
   update(deltaSeconds, target) {
@@ -590,13 +599,27 @@ export class AdvancedWaterSystem {
     this.material.uniforms.uCameraFar.value = this.camera.far;
     this.material.uniforms.uInverseProjectionMatrix.value.copy(this.camera.projectionMatrixInverse);
     this.material.uniforms.uInverseViewMatrix.value.copy(this.camera.matrixWorld);
+    let sunDirection = this.material.uniforms.uSunDirection.value;
     if (this.sun) {
-      const direction = this.sun.position.clone().sub(this.sun.target.position).normalize();
-      this.material.uniforms.uSunDirection.value.copy(direction);
+      sunDirection = this.sun.position.clone().sub(this.sun.target.position).normalize();
+      this.material.uniforms.uSunDirection.value.copy(sunDirection);
       this.material.uniforms.uSunColor.value.copy(this.sun.color);
     }
     this.interactions.update(deltaSeconds);
     this.aquaticEnvironment.update(deltaSeconds);
+    const cameraSurfaceY = sampleWaterSurface(
+      this.camera.position.x,
+      this.camera.position.z,
+      this.elapsed,
+      Number(this.settings.waveAmplitude ?? 0.34),
+      this.spatialModel.waterLevel,
+    );
+    this.underwaterPost.update({
+      time: this.elapsed,
+      surfaceY: cameraSurfaceY,
+      sunDirection,
+      sunColor: this.material.uniforms.uSunColor.value,
+    });
   }
 
   render(scene, camera) {
@@ -610,7 +633,15 @@ export class AdvancedWaterSystem {
     this.mesh.visible = true;
 
     this.renderer.shadowMap.autoUpdate = false;
-    this.renderer.render(scene, camera);
+    if (this.underwaterPost.active) {
+      this.renderer.setRenderTarget(this.underwaterPost.target);
+      this.renderer.clear(true, true, false);
+      this.renderer.render(scene, camera);
+      this.underwaterPost.render(previousTarget);
+    } else {
+      this.renderer.setRenderTarget(previousTarget);
+      this.renderer.render(scene, camera);
+    }
     this.renderer.shadowMap.autoUpdate = previousAutoUpdate;
   }
 
@@ -621,6 +652,7 @@ export class AdvancedWaterSystem {
       refractionHeight: this.captureTarget.height,
       oceanRadius: this.oceanRadius,
       bathymetryResolution: this.bathymetry.resolution,
+      underwater: this.underwaterPost.active,
       floatingObjects: this.interactions.count,
       ...this.aquaticEnvironment.getDiagnostics(),
     };
@@ -630,10 +662,25 @@ export class AdvancedWaterSystem {
     return this.aquaticEnvironment.getDemoView();
   }
 
+  getSurfaceHeight(x, z) {
+    return sampleWaterSurface(
+      x,
+      z,
+      this.elapsed,
+      Number(this.settings.waveAmplitude ?? 0.34),
+      this.spatialModel.waterLevel,
+    );
+  }
+
+  isSwimmable(x, z, minimumDepth = 1.5) {
+    return this.spatialModel.sampleDepth(x, z) >= minimumDepth;
+  }
+
   dispose() {
     this.scene.remove(this.mesh);
     this.interactions.dispose();
     this.aquaticEnvironment.dispose();
+    this.underwaterPost.dispose();
     this.simulation.dispose();
     this.captureTarget.dispose();
     this.bathymetryTexture.dispose();

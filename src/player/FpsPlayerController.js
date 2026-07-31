@@ -4,10 +4,18 @@ import { DEFAULT_FPS_SETTINGS } from '../terrain/TerrainConfig.js';
 const UP = new THREE.Vector3(0, 1, 0);
 
 export class FpsPlayerController {
-  constructor({ canvas, camera, world, eventBus, settings = DEFAULT_FPS_SETTINGS }) {
+  constructor({
+    canvas,
+    camera,
+    world,
+    waterSystem = null,
+    eventBus,
+    settings = DEFAULT_FPS_SETTINGS,
+  }) {
     this.canvas = canvas;
     this.camera = camera;
     this.world = world;
+    this.waterSystem = waterSystem;
     this.eventBus = eventBus;
     this.settings = { ...DEFAULT_FPS_SETTINGS, ...settings };
     this.position = new THREE.Vector3();
@@ -15,6 +23,7 @@ export class FpsPlayerController {
     this.keys = new Set();
     this.enabled = false;
     this.grounded = false;
+    this.swimming = false;
     this.yaw = 0;
     this.pitch = 0;
     this.normal = new THREE.Vector3();
@@ -78,11 +87,21 @@ export class FpsPlayerController {
   #handleKeyDown(event) {
     if (!this.enabled) return;
     const code = event.code;
-    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'Space'].includes(code)) {
+    if ([
+      'KeyW',
+      'KeyA',
+      'KeyS',
+      'KeyD',
+      'ShiftLeft',
+      'ShiftRight',
+      'Space',
+      'ControlLeft',
+      'ControlRight',
+    ].includes(code)) {
       event.preventDefault();
       this.keys.add(code);
     }
-    if (code === 'Space' && this.grounded) {
+    if (code === 'Space' && this.grounded && !this.swimming) {
       this.velocity.y = this.settings.jumpSpeed;
       this.grounded = false;
     }
@@ -131,6 +150,38 @@ export class FpsPlayerController {
     this.world.clampToBounds(this.position, 0.8);
   }
 
+  #updateSwimming(delta) {
+    this.moveVector.set(0, 0, 0);
+    this.forward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    this.right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    if (this.keys.has('KeyW')) this.moveVector.add(this.forward);
+    if (this.keys.has('KeyS')) this.moveVector.sub(this.forward);
+    if (this.keys.has('KeyD')) this.moveVector.add(this.right);
+    if (this.keys.has('KeyA')) this.moveVector.sub(this.right);
+    if (this.keys.has('Space')) this.moveVector.y += 1;
+    if (this.keys.has('ControlLeft') || this.keys.has('ControlRight')) this.moveVector.y -= 1;
+    if (this.moveVector.lengthSq() > 0) this.moveVector.normalize();
+
+    const fast = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+    const speed = fast ? this.settings.swimFastSpeed : this.settings.swimSpeed;
+    const response = 1 - Math.exp(-this.settings.swimAcceleration * delta);
+    this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, this.moveVector.x * speed, response);
+    this.velocity.y = THREE.MathUtils.lerp(this.velocity.y, this.moveVector.y * speed, response);
+    this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, this.moveVector.z * speed, response);
+    this.position.addScaledVector(this.velocity, delta);
+    this.world.clampToBounds(this.position, 0.8);
+
+    const floorHeight = this.world.sampleHeight(this.position.x, this.position.z);
+    this.position.y = Math.max(this.position.y, floorHeight + this.settings.swimFloorClearance);
+    const surfaceHeight = this.waterSystem.getSurfaceHeight(this.position.x, this.position.z);
+    const headHeight = this.position.y + this.settings.eyeHeight;
+    if (headHeight > surfaceHeight + 0.42 && this.moveVector.y >= 0) {
+      this.position.y = Math.min(this.position.y, surfaceHeight + 0.42 - this.settings.eyeHeight);
+      this.velocity.y = Math.min(this.velocity.y, 0.8);
+    }
+    this.grounded = this.position.y <= floorHeight + this.settings.swimFloorClearance + 0.01;
+  }
+
   #syncCamera() {
     this.camera.position.set(
       this.position.x,
@@ -148,16 +199,26 @@ export class FpsPlayerController {
     const step = delta / substeps;
 
     for (let i = 0; i < substeps; i += 1) {
-      this.#moveHorizontal(step);
-      this.velocity.y -= this.settings.gravity * step;
-      this.position.y += this.velocity.y * step;
-      const groundHeight = this.world.sampleHeight(this.position.x, this.position.z);
-      if (this.position.y <= groundHeight) {
-        this.position.y = groundHeight;
-        this.velocity.y = 0;
-        this.grounded = true;
+      const surfaceHeight = this.waterSystem?.getSurfaceHeight(this.position.x, this.position.z) ?? -Infinity;
+      const eyeHeight = this.position.y + this.settings.eyeHeight;
+      this.swimming = Boolean(
+        this.waterSystem?.isSwimmable(this.position.x, this.position.z, this.settings.swimMinimumDepth)
+        && eyeHeight < surfaceHeight + 0.18,
+      );
+      if (this.swimming) {
+        this.#updateSwimming(step);
       } else {
-        this.grounded = false;
+        this.#moveHorizontal(step);
+        this.velocity.y -= this.settings.gravity * step;
+        this.position.y += this.velocity.y * step;
+        const groundHeight = this.world.sampleHeight(this.position.x, this.position.z);
+        if (this.position.y <= groundHeight) {
+          this.position.y = groundHeight;
+          this.velocity.y = 0;
+          this.grounded = true;
+        } else {
+          this.grounded = false;
+        }
       }
     }
 
@@ -167,6 +228,7 @@ export class FpsPlayerController {
       position: this.position,
       grounded: this.grounded,
       running,
+      swimming: this.swimming,
     });
   }
 
