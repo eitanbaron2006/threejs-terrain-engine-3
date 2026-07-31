@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { createTerrainHeightSampler } from '../terrain/noise.js';
+import { AquaticEnvironment } from './AquaticEnvironment.js';
 import { GpuWaterSimulation } from './GpuWaterSimulation.js';
+import { WaterInteractionSystem } from './WaterInteractionSystem.js';
+import { WaterSpatialModel } from './WaterSpatialModel.js';
 
 const BATHYMETRY_RESOLUTION = 384;
 const BATHYMETRY_MAX_DEPTH = 255;
@@ -390,6 +393,7 @@ export class AdvancedWaterSystem {
     this.randomState = 0x9e3779b9;
     this.bathymetry = createBathymetryData(this.config, this.generatorSettings);
     this.bathymetryTexture = createBathymetryTexture(this.bathymetry);
+    this.spatialModel = this.#createSpatialModel();
 
     this.simulation = new GpuWaterSimulation(renderer, {
       size: this.settings.simulationResolution,
@@ -452,7 +456,33 @@ export class AdvancedWaterSystem {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 100;
     this.scene.add(this.mesh);
+    this.interactions = new WaterInteractionSystem({
+      scene: this.scene,
+      spatialModel: this.spatialModel,
+      settings: this.settings,
+    });
+    this.aquaticEnvironment = new AquaticEnvironment({
+      scene: this.scene,
+      spatialModel: this.spatialModel,
+      settings: this.settings,
+    });
     this.#createCaptureTarget(1, 1);
+  }
+
+  #createSpatialModel() {
+    const worldSize = Math.max(1, Number(this.config.worldSizeKm ?? 8) * 1000);
+    const waterLevel = Number(this.config.waterLevel ?? -3);
+    const terrainSettings = {
+      ...this.generatorSettings,
+      worldRadius: worldSize * 0.5,
+      waterLevel,
+    };
+    return new WaterSpatialModel({
+      worldSize,
+      waterLevel,
+      seed: Number(this.generatorSettings.seed ?? 1337),
+      sampleHeight: createTerrainHeightSampler(terrainSettings),
+    });
   }
 
   #random() {
@@ -496,10 +526,13 @@ export class AdvancedWaterSystem {
     const previousTexture = this.bathymetryTexture;
     this.bathymetry = nextBathymetry;
     this.bathymetryTexture = nextTexture;
+    this.spatialModel = this.#createSpatialModel();
     this.material.uniforms.uBathymetryMap.value = nextTexture;
     this.material.uniforms.uBathymetryWorldSize.value = nextBathymetry.worldSize;
     this.material.uniforms.uBathymetryMaxDepth.value = nextBathymetry.maxDepth;
     this.material.uniforms.uHasBathymetryMap.value = 1;
+    this.interactions.rebuild(this.spatialModel, this.settings);
+    this.aquaticEnvironment.rebuild(this.spatialModel, this.settings);
     previousTexture?.dispose();
   }
 
@@ -533,6 +566,8 @@ export class AdvancedWaterSystem {
     uniforms.uOpacity.value = this.settings.opacity;
     uniforms.uShallowColor.value.set(this.settings.shallowColor);
     uniforms.uDeepColor.value.set(this.settings.deepColor);
+    this.interactions.applySettings(this.settings);
+    this.aquaticEnvironment.applySettings(this.settings);
   }
 
   update(deltaSeconds, target) {
@@ -560,6 +595,8 @@ export class AdvancedWaterSystem {
       this.material.uniforms.uSunDirection.value.copy(direction);
       this.material.uniforms.uSunColor.value.copy(this.sun.color);
     }
+    this.interactions.update(deltaSeconds);
+    this.aquaticEnvironment.update(deltaSeconds);
   }
 
   render(scene, camera) {
@@ -584,11 +621,19 @@ export class AdvancedWaterSystem {
       refractionHeight: this.captureTarget.height,
       oceanRadius: this.oceanRadius,
       bathymetryResolution: this.bathymetry.resolution,
+      floatingObjects: this.interactions.count,
+      ...this.aquaticEnvironment.getDiagnostics(),
     };
+  }
+
+  getUnderwaterDemoView() {
+    return this.aquaticEnvironment.getDemoView();
   }
 
   dispose() {
     this.scene.remove(this.mesh);
+    this.interactions.dispose();
+    this.aquaticEnvironment.dispose();
     this.simulation.dispose();
     this.captureTarget.dispose();
     this.bathymetryTexture.dispose();
