@@ -110,6 +110,16 @@ export const DEFAULT_WATER_SETTINGS = Object.freeze({
   dynamicRipples: true,
   shallowColor: '#2faaa3',
   deepColor: '#07385f',
+  floatingSpheresEnabled: true,
+  floatingSphereCount: 12,
+  floatingSphereRadius: 3.2,
+  waterObjectDensity: 0.58,
+  aquaticLifeEnabled: true,
+  fishCount: 30,
+  seagrassCount: 120,
+  coralCount: 18,
+  underwaterOpticsEnabled: true,
+  underwaterOpticalDensity: 1,
 });
 
 export const DEFAULT_FPS_SETTINGS = Object.freeze({
@@ -121,6 +131,11 @@ export const DEFAULT_FPS_SETTINGS = Object.freeze({
   maxStepHeight: 1.0,
   maxSlopeDegrees: 52,
   mouseSensitivity: 0.0022,
+  swimSpeed: 6.5,
+  swimFastSpeed: 10.5,
+  swimAcceleration: 4.8,
+  swimFloorClearance: 0.45,
+  swimMinimumDepth: 1.8,
 });
 
 export function cloneMaterialSettings(settings = DEFAULT_MATERIAL_SETTINGS) {

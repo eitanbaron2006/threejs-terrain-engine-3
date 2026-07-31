@@ -150,6 +150,16 @@ export class EditorUI {
                 ${this.#range('water-shore-fade', 'Depth Fade בחוף', this.waterSettings.shoreFade, 0.2, 4, 0.05)}
                 ${this.#range('water-foam', 'קצף חוף', this.waterSettings.foamStrength, 0, 1, 0.01)}
                 ${this.#range('water-curvature', 'עקמומיות אופק', this.waterSettings.horizonCurvature, 0, 110, 1)}
+                <label class="toggle"><input id="water-floating-spheres" type="checkbox" ${this.waterSettings.floatingSpheresEnabled ? 'checked' : ''}><span>כדורי בדיקת ציפה</span></label>
+                ${this.#range('water-object-density', 'צפיפות אובייקטים צפים', this.waterSettings.waterObjectDensity, 0.2, 1.4, 0.01)}
+                <label class="toggle"><input id="water-aquatic-life" type="checkbox" ${this.waterSettings.aquaticLifeEnabled ? 'checked' : ''}><span>דגים, עשב ים ואלמוגים</span></label>
+                ${this.#range('water-fish-count', 'כמות דגים', this.waterSettings.fishCount, 0, 48, 2)}
+                ${this.#range('water-seagrass-count', 'כמות עשב ים', this.waterSettings.seagrassCount, 0, 180, 10)}
+                ${this.#range('water-coral-count', 'כמות אלמוגים', this.waterSettings.coralCount, 0, 24, 1)}
+                <label class="toggle"><input id="water-underwater-optics" type="checkbox" ${this.waterSettings.underwaterOpticsEnabled ? 'checked' : ''}><span>אופטיקה תת־ימית</span></label>
+                ${this.#range('water-optical-density', 'צפיפות אופטית במים', this.waterSettings.underwaterOpticalDensity, 0.45, 1.8, 0.05)}
+                <button class="secondary full" data-action="floating-demo-view">מעבר לכדורי בדיקת הציפה</button>
+                <button class="secondary full" data-action="underwater-demo-view">מעבר לסביבת ההדגמה התת־ימית</button>
                 <p class="hint">המים משתמשים ב־ping-pong Render Targets, Fresnel, שבירה, עומק, קצף ו־shore fade. אותו משטח ממלא את הים והאגמים שמתחת לגובה המים.</p>
               </div>
             </details>
@@ -471,12 +481,30 @@ export class EditorUI {
       });
     }
     this.root.querySelector('#dynamic-ripples').addEventListener('change', () => this.emit('water-settings', this.getWaterSettings()));
-    for (const id of ['water-wave-amplitude', 'water-ripple-amplitude', 'water-normal-strength', 'water-refraction', 'water-shore-fade', 'water-foam', 'water-curvature']) {
+    for (const id of ['water-floating-spheres', 'water-aquatic-life', 'water-underwater-optics']) {
+      this.root.querySelector(`#${id}`).addEventListener('change', () => this.emit('water-settings', this.getWaterSettings()));
+    }
+    for (const id of [
+      'water-wave-amplitude',
+      'water-ripple-amplitude',
+      'water-normal-strength',
+      'water-refraction',
+      'water-shore-fade',
+      'water-foam',
+      'water-curvature',
+      'water-object-density',
+      'water-fish-count',
+      'water-seagrass-count',
+      'water-coral-count',
+      'water-optical-density',
+    ]) {
       this.root.querySelector(`#${id}`).addEventListener('input', (event) => {
         this.#output(id, event.target.value);
         this.emit('water-settings', this.getWaterSettings());
       });
     }
+    this.root.querySelector('[data-action="floating-demo-view"]').addEventListener('click', () => this.emit('floating-demo-view'));
+    this.root.querySelector('[data-action="underwater-demo-view"]').addEventListener('click', () => this.emit('underwater-demo-view'));
     this.root.querySelector('#material-layer').addEventListener('change', (event) => { this.brushSettings.materialLayer = Number(event.target.value); });
     this.root.querySelector('#wireframe').addEventListener('change', (event) => this.emit('wireframe', event.target.checked));
     const exportFormat = this.root.querySelector('#terrain-export-format');
@@ -625,6 +653,14 @@ export class EditorUI {
       shoreFade: Number(this.root.querySelector('#water-shore-fade').value),
       foamStrength: Number(this.root.querySelector('#water-foam').value),
       horizonCurvature: Number(this.root.querySelector('#water-curvature').value),
+      floatingSpheresEnabled: this.root.querySelector('#water-floating-spheres').checked,
+      waterObjectDensity: Number(this.root.querySelector('#water-object-density').value),
+      aquaticLifeEnabled: this.root.querySelector('#water-aquatic-life').checked,
+      fishCount: Number(this.root.querySelector('#water-fish-count').value),
+      seagrassCount: Number(this.root.querySelector('#water-seagrass-count').value),
+      coralCount: Number(this.root.querySelector('#water-coral-count').value),
+      underwaterOpticsEnabled: this.root.querySelector('#water-underwater-optics').checked,
+      underwaterOpticalDensity: Number(this.root.querySelector('#water-optical-density').value),
     };
   }
 
@@ -802,6 +838,9 @@ export class EditorUI {
   syncWaterSettings(settings) {
     Object.assign(this.waterSettings, settings);
     this.root.querySelector('#dynamic-ripples').checked = settings.dynamicRipples;
+    this.root.querySelector('#water-floating-spheres').checked = settings.floatingSpheresEnabled;
+    this.root.querySelector('#water-aquatic-life').checked = settings.aquaticLifeEnabled;
+    this.root.querySelector('#water-underwater-optics').checked = settings.underwaterOpticsEnabled;
     for (const [id, value] of [
       ['water-wave-amplitude', settings.waveAmplitude],
       ['water-ripple-amplitude', settings.rippleAmplitude],
@@ -810,6 +849,11 @@ export class EditorUI {
       ['water-shore-fade', settings.shoreFade],
       ['water-foam', settings.foamStrength],
       ['water-curvature', settings.horizonCurvature],
+      ['water-object-density', settings.waterObjectDensity],
+      ['water-fish-count', settings.fishCount],
+      ['water-seagrass-count', settings.seagrassCount],
+      ['water-coral-count', settings.coralCount],
+      ['water-optical-density', settings.underwaterOpticalDensity],
     ]) {
       this.root.querySelector(`#${id}`).value = value;
       this.#output(id, value);
