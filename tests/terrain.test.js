@@ -852,6 +852,16 @@ test('shoreline flicker protection uses scene depth and shore fade', async () =>
   assert.equal(DEFAULT_WATER_SETTINGS.dynamicRipples, true);
 });
 
+test('open ocean thickness remains positive when the camera looks above the horizon', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/water/AdvancedWaterSystem.js', import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /if\s*\(depth\s*>=\s*0\.99999\)\s*\{\s*return\s+vViewDistance\s*\+\s*OPEN_OCEAN_FALLBACK_THICKNESS/s,
+  );
+  assert.doesNotMatch(source, /return\s+viewDistanceToWorld\(proceduralOceanBottomPosition\(\)\)/);
+});
+
 test('water color is driven by vertical depth and Fresnel instead of camera distance bands', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(new URL('../src/water/AdvancedWaterSystem.js', import.meta.url), 'utf8');

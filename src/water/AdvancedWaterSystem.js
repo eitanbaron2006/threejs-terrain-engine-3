@@ -196,6 +196,8 @@ const waterFragmentShader = /* glsl */ `
   in vec2 vSimulationUv;
   in float vSimulationWindowMask;
 
+  const float OPEN_OCEAN_FALLBACK_THICKNESS = 180.0;
+
   float perspectiveDepthToViewZ(float depth, float near, float far) {
     return (near * far) / ((far - near) * depth - far);
   }
@@ -213,15 +215,10 @@ const waterFragmentShader = /* glsl */ `
     return vec3(vWorldPosition.x, uWaterLevel - 180.0, vWorldPosition.z);
   }
 
-  float viewDistanceToWorld(vec3 worldPosition) {
-    vec4 viewPosition = viewMatrix * vec4(worldPosition, 1.0);
-    return max(0.1, -viewPosition.z);
-  }
-
   float sceneDistanceAt(vec2 uv) {
     float depth = texture(uSceneDepth, clamp(uv, vec2(0.001), vec2(0.999))).r;
     if (depth >= 0.99999) {
-      return viewDistanceToWorld(proceduralOceanBottomPosition());
+      return vViewDistance + OPEN_OCEAN_FALLBACK_THICKNESS;
     }
     return -perspectiveDepthToViewZ(depth, uCameraNear, uCameraFar);
   }
