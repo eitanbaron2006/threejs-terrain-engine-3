@@ -1,8 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeAutoWeights, terrainHeightAt, valueNoise2D } from '../src/terrain/noise.js';
-import { DEFAULT_GENERATOR_SETTINGS, DEFAULT_TERRAIN_CONFIG, DEFAULT_WATER_SETTINGS, QUALITY_TIERS } from '../src/terrain/TerrainConfig.js';
+import {
+  computeAutoWeights,
+  packControlWeights,
+  terrainHeightAt,
+  valueNoise2D,
+} from '../src/terrain/noise.js';
+import {
+  DEFAULT_GENERATOR_SETTINGS,
+  DEFAULT_STREAMING_SETTINGS,
+  DEFAULT_TERRAIN_CONFIG,
+  DEFAULT_WATER_SETTINGS,
+  QUALITY_TIERS,
+} from '../src/terrain/TerrainConfig.js';
 import { PBR_MAP_ALIASES, findAmbientMapEntry, selectProviderMap } from '../src/terrain/PbrMapResolver.js';
+import { createDefaultTerrainGraph } from '../src/terrain/TerrainGraphModel.js';
+import { compileTerrainPipeline } from '../src/terrain/TerrainGraphCompiler.js';
+import {
+  createTerrainMaterialProgramEvaluator,
+} from '../src/terrain/TerrainMaterialGraph.js';
+import { BUILTIN_TERRAIN_MATERIAL_PACKS } from '../src/terrain/TerrainMaterialPacks.js';
 
 test('noise is deterministic', () => {
   assert.equal(valueNoise2D(12.5, -8.75, 42), valueNoise2D(12.5, -8.75, 42));
@@ -28,6 +45,564 @@ test('automatic material weights are normalized for every preset', () => {
       assert.ok(weights.every((value) => value >= 0 && value <= 1));
     }
   }
+});
+
+test('packed control weights sum to 255 with minimum quantization error', () => {
+  const explicit = packControlWeights(Float32Array.from([0.5, 0.25, 0.25, 0]));
+  assert.deepEqual([...explicit], [127, 64, 64, 0]);
+
+  const denominator = 12;
+  for (let a = 0; a <= denominator; a += 1) {
+    for (let b = 0; b <= denominator - a; b += 1) {
+      for (let c = 0; c <= denominator - a - b; c += 1) {
+        const d = denominator - a - b - c;
+        const source = [a / denominator, b / denominator, c / denominator, d / denominator];
+        const packed = packControlWeights(Float32Array.from(source));
+        const ideal = source.map((weight) => weight * 255);
+        let minimumSquaredError = Infinity;
+
+        for (let mask = 0; mask < 16; mask += 1) {
+          const candidate = ideal.map((value, channel) => (
+            Math.floor(value) + ((mask >> channel) & 1)
+          ));
+          if (candidate.reduce((sum, value) => sum + value, 0) !== 255) continue;
+          const squaredError = candidate.reduce((sum, value, channel) => (
+            sum + (value - ideal[channel]) ** 2
+          ), 0);
+          minimumSquaredError = Math.min(minimumSquaredError, squaredError);
+        }
+
+        assert.ok(packed instanceof Uint8Array);
+        assert.equal(
+          packed[0] + packed[1] + packed[2] + packed[3],
+          255,
+          `packed sum failed for ${source}`,
+        );
+        const actualSquaredError = [...packed].reduce((sum, value, channel) => (
+          sum + (value - ideal[channel]) ** 2
+        ), 0);
+        assert.ok(
+          Math.abs(actualSquaredError - minimumSquaredError) < 1e-8,
+          `non-minimum quantization for ${source}: ${[...packed]}`,
+        );
+      }
+    }
+  }
+});
+
+test('packed control weights remain balanced when finite channel sums overflow', () => {
+  const packed = packControlWeights(Float64Array.from([
+    Number.MAX_VALUE,
+    Number.MAX_VALUE,
+    Number.MAX_VALUE,
+    Number.MAX_VALUE,
+  ]));
+
+  assert.deepEqual([...packed], [64, 64, 64, 63]);
+  assert.equal(packed[0] + packed[1] + packed[2] + packed[3], 255);
+});
+
+test('material-program-like objects reject unsupported versions instead of using a preset fallback', () => {
+  assert.throws(
+    () => computeAutoWeights(42, 18, 0.5, {
+      version: 999,
+      packId: 'mediterranean',
+      splatPreset: 'mediterranean',
+      globalBlend: 1,
+      transitionNoise: 0.2,
+      masks: [],
+      distributionRules: [],
+      biomeBlends: [],
+    }),
+    /unsupported terrain material program version/i,
+  );
+});
+
+test('malformed material-program-like objects are validated instead of using a preset fallback', () => {
+  assert.throws(
+    () => computeAutoWeights(42, 18, 0.5, {
+      version: 1,
+      packId: 'mediterranean',
+      splatPreset: 'mediterranean',
+      globalBlend: 1,
+      transitionNoise: 0.2,
+      masks: {},
+      distributionRules: [],
+      biomeBlends: [],
+    }),
+    /masks.*array/i,
+  );
+});
+
+test('material programs reject raw, cyclic, and unsupported splat presets before base evaluation', () => {
+  const createProgram = (splatPreset) => ({
+    version: 1,
+    packId: 'mediterranean',
+    splatPreset,
+    globalBlend: 1,
+    transitionNoise: 0.2,
+    masks: [],
+    distributionRules: [],
+    biomeBlends: [],
+  });
+  const cyclicPreset = {};
+  cyclicPreset.self = cyclicPreset;
+
+  assert.throws(
+    () => computeAutoWeights(42, 18, 0.5, createProgram({ raw: true })),
+    /splatPreset.*string/i,
+  );
+  assert.throws(
+    () => computeAutoWeights(42, 18, 0.5, createProgram(cyclicPreset)),
+    /splatPreset.*string/i,
+  );
+  assert.throws(
+    () => computeAutoWeights(42, 18, 0.5, createProgram('unsupported-preset')),
+    /splatPreset.*supported/i,
+  );
+  assert.deepEqual(
+    computeAutoWeights(42, 18, 0.5, createProgram(' Alpine ')),
+    computeAutoWeights(42, 18, 0.5, createProgram('alpine')),
+  );
+});
+
+test('graph material weights equal direct evaluation over the preset base weights', () => {
+  const graph = createDefaultTerrainGraph({ materialPackId: 'mediterranean' });
+  const pack = graph.nodes.find((node) => node.type === 'material/pack');
+  const output = graph.nodes.find((node) => node.type === 'terrain/materialOutput');
+  const distribution = {
+    id: graph.nextNodeId++,
+    type: 'material/layerDistribution',
+    title: 'Layer Distribution',
+    role: null,
+    position: [1520, 500],
+    properties: {
+      layer: 'rock',
+      minHeight: 30,
+      maxHeight: 180,
+      heightBlend: 12,
+      minSlope: 18,
+      maxSlope: 80,
+      slopeBlend: 10,
+      moistureAffinity: -0.2,
+      coastAffinity: -0.4,
+      erosionAffinity: 0.35,
+      curvatureBias: 0.5,
+      priority: 1.4,
+    },
+  };
+  graph.nodes.push(distribution);
+  graph.links = graph.links.filter((link) => (
+    !(link.fromNode === pack.id && link.toNode === output.id && link.toSocket === 'material')
+  ));
+  graph.links.push({
+    id: graph.nextLinkId++,
+    fromNode: pack.id,
+    fromSocket: 'material',
+    toNode: distribution.id,
+    toSocket: 'material',
+  });
+  graph.links.push({
+    id: graph.nextLinkId++,
+    fromNode: distribution.id,
+    fromSocket: 'material',
+    toNode: output.id,
+    toSocket: 'material',
+  });
+  const { materialProgram } = compileTerrainPipeline(graph, {
+    packCatalog: Object.values(BUILTIN_TERRAIN_MATERIAL_PACKS),
+  });
+  const height = 74;
+  const slopeDegrees = 33;
+  const variation = 0.61;
+  const context = {
+    height,
+    slope: slopeDegrees,
+    slopeDegrees,
+    variation,
+    curvature: -0.12,
+    moisture: 0.42,
+    exposure: 0.66,
+    coast: 0.08,
+    erosion: 0.58,
+    waterLevel: -3,
+  };
+  const baseWeights = computeAutoWeights(
+    height,
+    slopeDegrees,
+    variation,
+    materialProgram.splatPreset,
+    context,
+  );
+  const expected = createTerrainMaterialProgramEvaluator(materialProgram)(
+    context,
+    baseWeights,
+  );
+
+  assert.deepEqual(
+    computeAutoWeights(height, slopeDegrees, variation, materialProgram, context),
+    expected,
+  );
+});
+
+test('worker boundary accepts structured-cloned material programs and matches sync control bytes', async () => {
+  const { generateTerrainChunkData } = await import(
+    '../src/terrain/TerrainGenerationService.js'
+  );
+  const { handleTerrainWorkerMessage } = await import('../src/workers/terrainWorker.js');
+  const graph = createDefaultTerrainGraph({ materialPackId: 'mediterranean' });
+  const { terrainProgram, materialProgram } = compileTerrainPipeline(graph, {
+    packCatalog: Object.values(BUILTIN_TERRAIN_MATERIAL_PACKS),
+  });
+  const input = structuredClone({
+    id: 71,
+    type: 'generate-chunk',
+    descriptor: {
+      chunkX: 0,
+      chunkZ: 0,
+      key: '0,0',
+      lodIndex: 0,
+      dataResolution: 7,
+    },
+    config: DEFAULT_TERRAIN_CONFIG,
+    settings: {
+      ...DEFAULT_GENERATOR_SETTINGS,
+      terrainProgram,
+    },
+    materialSelector: materialProgram,
+  });
+  const expected = generateTerrainChunkData(
+    input.descriptor,
+    input.config,
+    input.settings,
+    input.materialSelector,
+  );
+
+  const result = handleTerrainWorkerMessage(input);
+
+  assert.equal(result.message.id, input.id);
+  assert.equal(result.message.type, 'chunk-result');
+  assert.deepEqual(
+    [...new Uint8Array(result.message.control)],
+    [...expected.control],
+  );
+  assert.equal(result.transfer.length, 3);
+  assert.ok(result.transfer.every((buffer) => buffer instanceof ArrayBuffer));
+});
+
+test('TerrainWorld gives materialProgram precedence and clears stale programs on legacy changes', async () => {
+  const { TerrainWorld } = await import('../src/terrain/TerrainWorld.js');
+  const recalculateCalls = [];
+  const chunk = {
+    modified: false,
+    calculateAutoControlData(selector) {
+      recalculateCalls.push(selector);
+      return new Uint8Array([0, 255, 0, 0]);
+    },
+    applyAutoControlData() {},
+  };
+  const world = Object.create(TerrainWorld.prototype);
+  world.chunks = new Map([['0,0', chunk]]);
+  world.modifiedChunkCache = new Map();
+  world.generatorSettings = { seed: 1337 };
+  world.eventBus = { emit() {} };
+  world.presetId = 'mediterranean';
+  world.materialDistribution = { id: 'custom', layers: [] };
+  world.materialProgram = { version: 1, packId: 'alpine', splatPreset: 'alpine' };
+  const nextProgram = {
+    version: 1,
+    packId: 'desert',
+    splatPreset: 'desert',
+    globalBlend: 1,
+    transitionNoise: 0,
+    masks: [],
+    distributionRules: [],
+    biomeBlends: [],
+  };
+
+  world.applyMaterialProgram(nextProgram);
+  assert.equal(world.getMaterialWeightSelector(), nextProgram);
+  assert.equal(recalculateCalls.at(-1), nextProgram);
+
+  world.applyPreset('volcanic');
+  assert.equal(world.materialProgram, null);
+  assert.equal(world.getMaterialWeightSelector(), 'volcanic');
+
+  world.applyMaterialPackDistribution({
+    id: 'custom-pack',
+    splatPreset: 'mediterranean',
+    layers: [{ distribution: {} }, {}, {}, {}],
+  }, nextProgram);
+  assert.equal(world.materialProgram, nextProgram);
+  assert.equal(world.getMaterialWeightSelector(), nextProgram);
+  assert.equal(recalculateCalls.at(-1), nextProgram);
+});
+
+test('TerrainWorld material selector changes roll back when the second chunk calculation fails', async () => {
+  const { TerrainWorld } = await import('../src/terrain/TerrainWorld.js');
+  const oldProgram = {
+    version: 1,
+    packId: 'mediterranean',
+    splatPreset: 'mediterranean',
+    globalBlend: 1,
+    transitionNoise: 0,
+    masks: [],
+    distributionRules: [],
+    biomeBlends: [],
+  };
+  const nextProgram = { ...oldProgram, packId: 'alpine', splatPreset: 'alpine' };
+  const first = {
+    key: 'first',
+    presetId: 'mediterranean',
+    modified: true,
+    legacyMutated: false,
+    applied: false,
+    recalculateControl() {
+      this.legacyMutated = true;
+    },
+    calculateAutoControlData() {
+      return Uint8Array.from([0, 255, 0, 0]);
+    },
+    applyAutoControlData() {
+      this.applied = true;
+    },
+    captureState() {
+      return { key: this.key };
+    },
+  };
+  const second = {
+    key: 'second',
+    presetId: 'mediterranean',
+    modified: true,
+    recalculateControl() {
+      throw new Error('second chunk failed');
+    },
+    calculateAutoControlData() {
+      throw new Error('second chunk failed');
+    },
+    applyAutoControlData() {
+      throw new Error('must not commit');
+    },
+  };
+  const oldCacheEntry = { key: 'old-cache' };
+  const world = Object.create(TerrainWorld.prototype);
+  world.chunks = new Map([['first', first], ['second', second]]);
+  world.modifiedChunkCache = new Map([['first', oldCacheEntry]]);
+  world.generatorSettings = { seed: 1337 };
+  world.eventBus = { emit() { throw new Error('must not emit'); } };
+  world.presetId = 'mediterranean';
+  world.materialDistribution = null;
+  world.materialProgram = oldProgram;
+  world.materialRevision = 4;
+
+  assert.throws(
+    () => world.applyMaterialProgram(nextProgram),
+    /second chunk failed/i,
+  );
+  assert.equal(world.presetId, 'mediterranean');
+  assert.equal(world.materialProgram, oldProgram);
+  assert.equal(world.materialDistribution, null);
+  assert.equal(world.materialRevision, 4);
+  assert.equal(first.legacyMutated, false);
+  assert.equal(first.applied, false);
+  assert.equal(first.presetId, 'mediterranean');
+  assert.equal(world.modifiedChunkCache.get('first'), oldCacheEntry);
+});
+
+test('TerrainWorld discards a deferred chunk generated before a material program change', async () => {
+  const THREE = await import('three');
+  const { TerrainWorld } = await import('../src/terrain/TerrainWorld.js');
+  const config = {
+    ...DEFAULT_TERRAIN_CONFIG,
+    worldSizeKm: 1,
+    chunkSize: 16,
+    sourceResolution: 3,
+    generationBudgetPerFrame: 1,
+    lodLevels: [
+      { id: 0, segments: 2, dataResolution: 3, maxDistance: Infinity },
+    ],
+  };
+  let resolveGeneration;
+  let requestedSelector;
+  const generationService = {
+    concurrency: 1,
+    generateChunk(descriptor, requestConfig, settings, selector) {
+      requestedSelector = selector;
+      return new Promise((resolve) => {
+        resolveGeneration = () => resolve({
+          descriptor,
+          resolution: 3,
+          heights: new Float32Array(9),
+          heightTextureData: new Float32Array(25),
+          heightTextureResolution: 5,
+          control: Uint8Array.from({ length: 36 }, (_, index) => (
+            index % 4 === 1 ? 255 : 0
+          )),
+          minHeight: 0,
+          maxHeight: 0,
+        });
+      });
+    },
+  };
+  const materialLibrary = {
+    createChunkMaterial: () => new THREE.MeshBasicMaterial(),
+    updateChunkMaterial() {},
+    disposeMaterial: (material) => material.dispose(),
+  };
+  const world = new TerrainWorld({
+    config,
+    materialLibrary,
+    generationService,
+    eventBus: { emit() {} },
+    generatorSettings: DEFAULT_GENERATOR_SETTINGS,
+    streamingSettings: { ...DEFAULT_STREAMING_SETTINGS, streamRadius: 0 },
+  });
+  world.streamingMode = 'fps';
+  world.updateStreaming(new THREE.Vector3(0, 0, 0), true);
+  assert.equal(requestedSelector, 'mediterranean');
+  const program = {
+    version: 1,
+    packId: 'alpine',
+    splatPreset: 'alpine',
+    globalBlend: 1,
+    transitionNoise: 0,
+    masks: [],
+    distributionRules: [],
+    biomeBlends: [],
+  };
+
+  world.applyMaterialProgram(program);
+  resolveGeneration();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(world.chunks.size, 0);
+  assert.equal(world.stats.generated, 0);
+  assert.equal(world.getMaterialWeightSelector(), program);
+  world.dispose();
+});
+
+test('TerrainChunk calculates automatic controls without mutation and commits explicitly', async () => {
+  const THREE = await import('three');
+  const { TerrainChunk } = await import('../src/terrain/TerrainChunk.js');
+  const resolution = 3;
+  const geometry = new THREE.BufferGeometry();
+  const materialLibrary = {
+    createChunkMaterial: () => new THREE.MeshBasicMaterial(),
+    disposeMaterial: (material) => material.dispose(),
+  };
+  const chunk = new TerrainChunk({
+    descriptor: { chunkX: 0, chunkZ: 0, key: '0,0', lodIndex: 0 },
+    config: DEFAULT_TERRAIN_CONFIG,
+    geometry,
+    materialLibrary,
+    generation: {
+      resolution,
+      heights: Float32Array.from([0, 10, 20, 5, 25, 45, 10, 35, 70]),
+      heightTextureData: new Float32Array((resolution + 2) ** 2),
+      heightTextureResolution: resolution + 2,
+      control: Uint8Array.from({ length: resolution * resolution * 4 }, (_, index) => (
+        index % 4 === 1 ? 255 : 0
+      )),
+      minHeight: 0,
+      maxHeight: 70,
+    },
+  });
+  const before = chunk.autoControlData.slice();
+  const controlMapVersion = chunk.controlMap.version;
+
+  const calculated = chunk.calculateAutoControlData('volcanic', DEFAULT_GENERATOR_SETTINGS);
+
+  assert.deepEqual(chunk.autoControlData, before);
+  assert.notDeepEqual(calculated, before);
+  chunk.applyAutoControlData(calculated);
+  assert.deepEqual(chunk.autoControlData, calculated);
+  assert.equal(chunk.controlMap.version, controlMapVersion + 1);
+  chunk.dispose();
+  geometry.dispose();
+});
+
+test('worker pool failure drains in-flight and queued jobs synchronously without hanging', async () => {
+  const { TerrainGenerationService } = await import(
+    '../src/terrain/TerrainGenerationService.js'
+  );
+  class FakeWorker {
+    constructor(index) {
+      this.index = index;
+      this.listeners = new Map();
+      this.messages = [];
+      this.terminated = false;
+    }
+
+    addEventListener(type, listener) {
+      this.listeners.set(type, listener);
+    }
+
+    postMessage(message) {
+      this.messages.push(message);
+    }
+
+    terminate() {
+      this.terminated = true;
+    }
+
+    emitError(message) {
+      this.listeners.get('error')?.({ message });
+    }
+  }
+
+  const workers = [];
+  let creationAttempts = 0;
+  const service = new TerrainGenerationService(2, {
+    workerFactory(index) {
+      creationAttempts += 1;
+      if (creationAttempts > 2) throw new Error('replacement unavailable');
+      const worker = new FakeWorker(index);
+      workers.push(worker);
+      return worker;
+    },
+  });
+  const config = {
+    ...DEFAULT_TERRAIN_CONFIG,
+    chunkSize: 16,
+    sourceResolution: 3,
+  };
+  const descriptors = [0, 1, 2].map((chunkX) => ({
+    chunkX,
+    chunkZ: 0,
+    key: `${chunkX},0`,
+    lodIndex: 0,
+    dataResolution: 3,
+  }));
+  const promises = descriptors.map((descriptor) => service.generateChunk(
+    descriptor,
+    config,
+    DEFAULT_GENERATOR_SETTINGS,
+    'mediterranean',
+  ));
+  assert.equal(workers[0].messages.length, 1);
+  assert.equal(workers[1].messages.length, 1);
+
+  workers[0].emitError('worker crashed');
+  const results = await Promise.race([
+    Promise.all(promises),
+    new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error('worker promises hung')), 1000);
+    }),
+  ]);
+  const future = await service.generateChunk(
+    { ...descriptors[0], key: 'future' },
+    config,
+    DEFAULT_GENERATOR_SETTINGS,
+    'mediterranean',
+  );
+
+  assert.equal(creationAttempts, 3);
+  assert.ok(workers.every((worker) => worker.terminated));
+  assert.equal(results.length, 3);
+  assert.ok(results.every((result) => result.control instanceof Uint8Array));
+  assert.ok(future.control instanceof Uint8Array);
+  assert.deepEqual(service.getDiagnostics(), { concurrency: 1, queued: 0, busy: 0 });
+  service.dispose();
 });
 
 test('LOD levels become progressively coarser', () => {
@@ -171,8 +746,13 @@ test('mediterranean generation keeps inland uplands from becoming one broad soil
 test('terrain height textures include a one-sample halo', async () => {
   const { readFile } = await import('node:fs/promises');
   const workerSource = await readFile(new URL('../src/workers/terrainWorker.js', import.meta.url), 'utf8');
-  assert.match(workerSource, /paddedResolution\s*=\s*resolution\s*\+\s*2/);
-  assert.match(workerSource, /heightTextureData/);
+  const generationSource = await readFile(
+    new URL('../src/terrain/TerrainGenerationService.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(generationSource, /paddedResolution\s*=\s*resolution\s*\+\s*2/);
+  assert.match(generationSource, /heightTextureData/);
+  assert.match(workerSource, /generateTerrainChunkData/);
 });
 
 test('LOD borders use a transition band instead of single-row snapping', async () => {
@@ -584,12 +1164,21 @@ test('Terrain Material System 2.0 performs true four-way blending', async () => 
 test('geological splat generation includes curvature moisture exposure erosion and coast', async () => {
   const { readFile } = await import('node:fs/promises');
   const worker = await readFile(new URL('../src/workers/terrainWorker.js', import.meta.url), 'utf8');
+  const generation = await readFile(
+    new URL('../src/terrain/TerrainGenerationService.js', import.meta.url),
+    'utf8',
+  );
+  const analysis = await readFile(
+    new URL('../src/terrain/TerrainSurfaceAnalysis.js', import.meta.url),
+    'utf8',
+  );
   const noise = await readFile(new URL('../src/terrain/noise.js', import.meta.url), 'utf8');
   for (const signal of ['curvature', 'moisture', 'exposure', 'erosion', 'coast']) {
-    assert.match(worker, new RegExp(signal));
+    assert.match(analysis, new RegExp(signal));
     assert.match(noise, new RegExp(signal));
   }
-  assert.match(worker, /smoothControlWeights/);
+  assert.match(worker, /generateTerrainChunkData/);
+  assert.match(generation, /smoothControlWeights/);
   assert.match(noise, /export function smoothControlWeights/);
 });
 

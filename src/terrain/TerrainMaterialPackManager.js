@@ -118,6 +118,34 @@ function solidPixels(resolution, rgba) {
   return output;
 }
 
+function samplePreparedLayerColors(pack, arrays, resolution) {
+  const baseColor = arrays?.baseColor;
+  const pixelsPerLayer = Number(resolution) * Number(resolution);
+  if (!(baseColor instanceof Uint8Array) || !Number.isFinite(pixelsPerLayer) || pixelsPerLayer < 1) {
+    return [];
+  }
+  const stride = pixelsPerLayer * 4;
+  const sampleCount = Math.min(256, pixelsPerLayer);
+  const sampleStep = Math.max(1, Math.floor(pixelsPerLayer / sampleCount));
+  return Array.from({ length: 4 }, (_, layerIndex) => {
+    const sums = [0, 0, 0];
+    let count = 0;
+    for (let pixel = 0; pixel < pixelsPerLayer && count < sampleCount; pixel += sampleStep) {
+      const offset = layerIndex * stride + pixel * 4;
+      sums[0] += baseColor[offset];
+      sums[1] += baseColor[offset + 1];
+      sums[2] += baseColor[offset + 2];
+      count += 1;
+    }
+    const layer = pack.layers?.[layerIndex] ?? {};
+    return {
+      id: layer.id ?? ['sand', 'grass', 'soil', 'rock'][layerIndex],
+      label: layer.label ?? `Layer ${layerIndex + 1}`,
+      color: sums.map((sum) => Math.round(sum / Math.max(1, count))),
+    };
+  });
+}
+
 async function descriptorToPixels(descriptor, resolution, fallback) {
   if (!descriptor || descriptor.kind === 'generated') {
     return solidPixels(resolution, descriptor?.value ?? fallback);
@@ -380,12 +408,20 @@ async function buildArrayData(entries, manifest, resolution, progress = () => {}
 }
 
 export class TerrainMaterialPackManager {
-  constructor({ materialLibrary, world }) {
+  constructor({ materialLibrary, world, packBuilders = {} }) {
     this.materialLibrary = materialLibrary;
     this.world = world;
     this.db = null;
     this.imported = new Map();
     this.activePackId = 'mediterranean';
+    this.activeMaterialLayers = [];
+    this.preparedPackCache = new Map();
+    this.packBuilders = {
+      ambientcg: buildAmbientCgArrayData,
+      polyhaven: buildPolyHavenArrayData,
+      custom: buildMixedProviderArrayData,
+      ...packBuilders,
+    };
   }
 
   async initialize() {
@@ -440,6 +476,7 @@ export class TerrainMaterialPackManager {
       await transactionPromise(transaction);
     }
     this.imported.set(id, manifest);
+    this.#invalidatePreparedPack(id);
     return manifest;
   }
 
@@ -452,6 +489,7 @@ export class TerrainMaterialPackManager {
       await transactionPromise(transaction);
     }
     this.imported.set(manifest.id, manifest);
+    this.#invalidatePreparedPack(manifest.id);
     await this.applyPack(manifest.id, { bytes, progress });
     return manifest;
   }
@@ -459,6 +497,7 @@ export class TerrainMaterialPackManager {
   async removeImportedPack(id) {
     if (!this.imported.has(id)) return false;
     this.imported.delete(id);
+    this.#invalidatePreparedPack(id);
     if (this.db) {
       const transaction = this.db.transaction(STORE_NAME, 'readwrite');
       transaction.objectStore(STORE_NAME).delete(id);
@@ -477,32 +516,50 @@ export class TerrainMaterialPackManager {
     });
   }
 
-  async applyPack(id, { bytes = null, progress = () => {} } = {}) {
-    const builtIn = BUILTIN_TERRAIN_MATERIAL_PACKS[id];
-    const catalogPack = builtIn ?? this.imported.get(id);
-    if (catalogPack?.source === 'polyhaven' || catalogPack?.source === 'ambientcg' || catalogPack?.source === 'custom') {
-      const tier = QUALITY_TIERS[this.materialLibrary.getSettings().qualityTier] ?? QUALITY_TIERS.high;
-      const builder = catalogPack.source === 'ambientcg'
-        ? buildAmbientCgArrayData
-        : catalogPack.source === 'polyhaven'
-          ? buildPolyHavenArrayData
-          : buildMixedProviderArrayData;
-      const { arrays, resolution, sourceLabel, sources, warnings = [] } = await builder(catalogPack, tier, progress);
-      const diagnostics = this.materialLibrary.applyImportedMaterialArrays({
-        baseColorData: arrays.baseColor,
-        normalData: arrays.normal,
-        ormData: arrays.orm,
-        heightData: arrays.height,
-        resolution,
-        packId: catalogPack.id,
-      });
-      const materialSettings = this.materialLibrary.applyMaterialPackLayerSettings(catalogPack.layers);
-      this.world.applyMaterialPackDistribution(catalogPack);
-      this.activePackId = id;
-      progress({ completed: catalogPack.layers.length * 5, total: catalogPack.layers.length * 5, label: `חבילת ${catalogPack.provider ?? 'PBR'} הוחלה.` });
-      return { pack: catalogPack, diagnostics, materialSettings, sourceLabel, sources, warnings };
-    }
+  #preparedPackKey(pack) {
+    const qualityTier = this.materialLibrary.getSettings().qualityTier;
+    const tier = QUALITY_TIERS[qualityTier] ?? QUALITY_TIERS.high;
+    const fingerprint = JSON.stringify({
+      id: pack.id,
+      source: pack.source,
+      resolution: tier.materialResolution,
+      globalBlend: pack.globalBlend,
+      transitionNoise: pack.transitionNoise,
+      layers: pack.layers?.map((layer) => ({
+        id: layer.id,
+        assetId: layer.assetId,
+        provider: layer.provider,
+        meters: layer.meters,
+        strength: layer.strength,
+        roughness: layer.roughness,
+        metalness: layer.metalness,
+        distribution: layer.distribution,
+      })),
+    });
+    return `${pack.id}:${qualityTier}:${fingerprint}`;
+  }
 
+  #invalidatePreparedPack(id) {
+    for (const key of this.preparedPackCache.keys()) {
+      if (key.startsWith(`${id}:`)) this.preparedPackCache.delete(key);
+    }
+  }
+
+  async #prepareProviderPack(pack, progress) {
+    const tier = QUALITY_TIERS[this.materialLibrary.getSettings().qualityTier] ?? QUALITY_TIERS.high;
+    const builder = this.packBuilders[pack.source];
+    if (typeof builder !== 'function') {
+      throw new Error(`אין בונה חבילת PBR עבור המקור ${pack.source}.`);
+    }
+    const built = await builder(pack, tier, progress);
+    return {
+      pack,
+      ...built,
+      materialLayers: samplePreparedLayerColors(pack, built.arrays, built.resolution),
+    };
+  }
+
+  async #prepareArchivePack(id, bytes, progress) {
     let archiveBytes = bytes;
     if (!archiveBytes) {
       const record = await this.#readCachedRecord(id);
@@ -512,23 +569,111 @@ export class TerrainMaterialPackManager {
     const { entries, manifest } = parsePackArchive(archiveBytes);
     const tier = QUALITY_TIERS[this.materialLibrary.getSettings().qualityTier] ?? QUALITY_TIERS.high;
     const declared = Number(manifest.resolution ?? tier.materialResolution);
-    const resolution = Math.max(256, Math.min(declared || tier.materialResolution, tier.materialResolution, this.materialLibrary.renderer.capabilities.maxTextureSize, 4096));
+    const resolution = Math.max(256, Math.min(
+      declared || tier.materialResolution,
+      tier.materialResolution,
+      this.materialLibrary.renderer.capabilities.maxTextureSize,
+      4096,
+    ));
     const arrays = await buildArrayData(entries, manifest, resolution, progress);
+    return {
+      pack: manifest,
+      arrays,
+      resolution,
+      sourceLabel: null,
+      sources: [],
+      warnings: [],
+      materialLayers: samplePreparedLayerColors(manifest, arrays, resolution),
+    };
+  }
+
+  async preparePack(id, { bytes = null, progress = () => {} } = {}) {
+    const builtIn = BUILTIN_TERRAIN_MATERIAL_PACKS[id];
+    const catalogPack = builtIn ?? this.imported.get(id);
+    if (!catalogPack) throw new Error(`חבילת החומרים "${id}" אינה קיימת.`);
+    const cacheKey = this.#preparedPackKey(catalogPack);
+    if (this.preparedPackCache.has(cacheKey)) return this.preparedPackCache.get(cacheKey);
+
+    const preparation = (
+      catalogPack.source === 'polyhaven'
+      || catalogPack.source === 'ambientcg'
+      || catalogPack.source === 'custom'
+        ? this.#prepareProviderPack(catalogPack, progress)
+        : this.#prepareArchivePack(id, bytes, progress)
+    ).catch((error) => {
+      this.preparedPackCache.delete(cacheKey);
+      throw error;
+    });
+    this.preparedPackCache.set(cacheKey, preparation);
+    return preparation;
+  }
+
+  commitPreparedPack(prepared, { materialProgram = null } = {}) {
+    if (!prepared?.pack || !prepared?.arrays || !Number.isFinite(prepared.resolution)) {
+      throw new Error('חבילת החומרים המוכנה אינה תקינה.');
+    }
+    const {
+      pack,
+      arrays,
+      resolution,
+      sourceLabel,
+      sources = [],
+      warnings = [],
+      materialLayers = [],
+    } = prepared;
     const diagnostics = this.materialLibrary.applyImportedMaterialArrays({
       baseColorData: arrays.baseColor,
       normalData: arrays.normal,
       ormData: arrays.orm,
       heightData: arrays.height,
       resolution,
-      packId: manifest.id,
+      packId: pack.id,
     });
-    this.world.applyMaterialPackDistribution(manifest);
-    this.activePackId = manifest.id;
-    return { pack: manifest, diagnostics };
+    const materialSettings = Array.isArray(pack.layers)
+      ? this.materialLibrary.applyMaterialPackLayerSettings(pack.layers)
+      : null;
+    this.world.applyMaterialPackDistribution(pack, materialProgram);
+    this.activePackId = pack.id;
+    this.activeMaterialLayers = materialLayers.map((layer) => ({
+      ...layer,
+      color: [...layer.color],
+    }));
+    return {
+      pack,
+      diagnostics,
+      materialSettings,
+      sourceLabel,
+      sources,
+      warnings,
+      materialLayers,
+    };
+  }
+
+  async applyPack(id, { bytes = null, progress = () => {}, materialProgram = null } = {}) {
+    const prepared = await this.preparePack(id, { bytes, progress });
+    const result = this.commitPreparedPack(prepared, { materialProgram });
+    const total = result.pack.layers?.length * 5;
+    if (Number.isFinite(total)) {
+      progress({
+        completed: total,
+        total,
+        label: `חבילת ${result.pack.provider ?? 'PBR'} הוחלה.`,
+      });
+    }
+    return result;
+  }
+
+  getActiveMaterialLayers() {
+    return this.activeMaterialLayers.map((layer) => ({
+      ...layer,
+      color: [...layer.color],
+    }));
   }
 
   dispose() {
     this.db?.close?.();
     this.imported.clear();
+    this.preparedPackCache.clear();
+    this.activeMaterialLayers = [];
   }
 }

@@ -33,10 +33,11 @@ import { TerrainMaterialPackManager } from '../terrain/TerrainMaterialPackManage
 import {
   createDefaultTerrainGraph,
   deriveSettingsFromTerrainGraph,
+  normalizeTerrainGraph,
   syncSettingsToTerrainGraph,
   validateTerrainGraph,
 } from '../terrain/TerrainGraphModel.js';
-import { compileTerrainGraph } from '../terrain/TerrainGraphCompiler.js';
+import { compileTerrainGraph, compileTerrainPipeline } from '../terrain/TerrainGraphCompiler.js';
 import { TerrainGraphPreview } from '../terrain/TerrainGraphPreview.js';
 import { EditorUI } from '../ui/EditorUI.js';
 import { TerrainGraphEditor } from '../ui/TerrainGraphEditor.js';
@@ -87,12 +88,12 @@ export class TerrainEditorApp {
       environmentSettings: this.environmentSettings,
       presetId: 'mediterranean',
     });
-    this.#createTerrainGraphTools();
     this.#createRenderer();
     this.#createScene();
     this.#createTerrain();
     const packs = await this.materialPackManager.initialize();
     this.ui.setMaterialPacks(packs, this.activeMaterialPackId);
+    this.#createTerrainGraphTools();
     await this.#loadAmbientHdriCatalog().catch(() => null);
     this.#createSpawnMarker();
     this.#createPlayer();
@@ -139,6 +140,7 @@ export class TerrainEditorApp {
     this.terrainGraphPreview = new TerrainGraphPreview({
       canvas: this.ui.terrainGraphPreviewCanvas,
       statusElement: this.ui.terrainGraphStatus,
+      legendElement: this.ui.terrainGraphPreviewLegend,
     });
     this.terrainGraphEditor = new TerrainGraphEditor({
       root: this.ui.terrainGraphRoot,
@@ -152,20 +154,39 @@ export class TerrainEditorApp {
           ...this.generatorSettings,
           worldRadius: this.config.worldSizeKm * 500,
           waterLevel: this.config.waterLevel,
-        });
+        }, this.#terrainPreviewRequestOptions());
       },
       onBuild: () => this.#buildTerrainFromGraph(),
       onPreviewToggle: (enabled) => {
         this.terrainGraphPreview.setAuto(enabled);
-        if (enabled) this.terrainGraphPreview.request(this.terrainGraph, this.generatorSettings, { immediate: true });
+        if (enabled) {
+          this.terrainGraphPreview.request(
+            this.terrainGraph,
+            this.generatorSettings,
+            this.#terrainPreviewRequestOptions({ immediate: true }),
+          );
+        }
       },
       onStatus: (message, state) => this.ui.setTerrainGraphStatus(message, state),
+      onEditMaterialPack: (packId) => {
+        const pack = this.materialPackManager.getPack(packId);
+        if (pack) this.ui.openMaterialPackStudio(pack);
+      },
     });
+    this.terrainGraphEditor.setMaterialPackCatalog(this.materialPackManager.getCatalog());
     this.terrainGraphPreview.request(this.terrainGraph, {
       ...this.generatorSettings,
       worldRadius: this.config.worldSizeKm * 500,
       waterLevel: this.config.waterLevel,
-    }, { immediate: true });
+    }, this.#terrainPreviewRequestOptions({ immediate: true }));
+  }
+
+  #terrainPreviewRequestOptions(overrides = {}) {
+    return {
+      packCatalog: this.materialPackManager?.getCatalog?.() ?? [],
+      materialLayers: this.materialPackManager?.getActiveMaterialLayers?.() ?? [],
+      ...overrides,
+    };
   }
 
   #createScene() {
@@ -276,6 +297,7 @@ export class TerrainEditorApp {
 
   #bindUI() {
     this.ui.on('generate', () => this.#buildTerrainFromGraph());
+    this.ui.on('terrain-preview-mode', (mode) => this.terrainGraphPreview.setMode(mode));
     this.ui.on('generator-settings', (settings) => {
       this.terrainGraph = syncSettingsToTerrainGraph(this.terrainGraph, {
         ...settings,
@@ -287,7 +309,7 @@ export class TerrainEditorApp {
         ...settings,
         worldRadius: this.config.worldSizeKm * 500,
         waterLevel: this.config.waterLevel,
-      });
+      }, this.#terrainPreviewRequestOptions());
     });
 
     this.ui.on('apply-material-pack', () => this.#applyMaterialPack(this.ui.getSelectedMaterialPack(), true));
@@ -315,6 +337,7 @@ export class TerrainEditorApp {
       try {
         const manifest = await this.materialPackManager.saveCustomPack(draft);
         this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), manifest.id);
+        this.terrainGraphEditor.setMaterialPackCatalog(this.materialPackManager.getCatalog());
         this.ui.setMaterialStudioStatus(`${manifest.name} נשמרה. טרם הוחלה על העולם.`, 'success');
         this.ui.setMaterialPackStatus(`${manifest.name} נשמרה ונבחרה — לחץ “הורד והחל” כדי להחיל.`, 'idle');
       } catch (error) {
@@ -325,6 +348,7 @@ export class TerrainEditorApp {
       try {
         const manifest = await this.materialPackManager.saveCustomPack(draft);
         this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), manifest.id);
+        this.terrainGraphEditor.setMaterialPackCatalog(this.materialPackManager.getCatalog());
         await this.#applyMaterialPack(manifest.id, true);
         this.ui.setMaterialStudioStatus(`${manifest.name} נשמרה והוחלה.`, 'success');
       } catch (error) {
@@ -342,6 +366,7 @@ export class TerrainEditorApp {
         });
         this.activeMaterialPackId = manifest.id;
         this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), manifest.id);
+        this.terrainGraphEditor.setMaterialPackCatalog(this.materialPackManager.getCatalog());
         this.ui.setMaterialPackStatus(`${manifest.name} הוחלה ונשמרה מקומית.`, 'success');
         this.ui.toast(`חבילת ${manifest.name} יובאה והוחלה על הקרקע.`);
       } catch (error) {
@@ -361,6 +386,7 @@ export class TerrainEditorApp {
       }
       this.activeMaterialPackId = 'mediterranean';
       this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), this.activeMaterialPackId);
+      this.terrainGraphEditor.setMaterialPackCatalog(this.materialPackManager.getCatalog());
       await this.#applyMaterialPack(this.activeMaterialPackId, true);
     });
     this.ui.on('streaming-settings', (settings) => {
@@ -497,22 +523,56 @@ export class TerrainEditorApp {
   async #buildTerrainFromGraph() {
     this.#exitFpsMode();
     this.#cancelSpawnSelection();
-    this.ui.setBusy(true, 'בונה את תוכנית הגרף ומייצר עולם חדש...');
+    this.ui.setBusy(true, 'בונה את תוכנית הגרף ומכין חומרי PBR...');
     this.terrainGraphEditor.setBuildBusy(true);
     this.ui.setTerrainGraphStatus('Compiling graph...', 'loading');
     try {
-      const terrainProgram = compileTerrainGraph(this.terrainGraph);
+      const catalog = this.materialPackManager.getCatalog();
+      const { terrainProgram, materialProgram } = compileTerrainPipeline(this.terrainGraph, {
+        packCatalog: catalog,
+      });
       const derived = deriveSettingsFromTerrainGraph(this.terrainGraph, this.generatorSettings);
-      Object.assign(this.generatorSettings, derived, {
+      const nextSettings = {
+        ...this.generatorSettings,
+        ...derived,
         terrainProgram,
         worldRadius: this.config.worldSizeKm * 500,
         waterLevel: this.config.waterLevel,
-      });
+      };
+      let prepared = null;
+      if (materialProgram) {
+        this.ui.setTerrainGraphStatus(`Preparing PBR pack: ${materialProgram.packId}...`, 'loading');
+        prepared = await this.materialPackManager.preparePack(materialProgram.packId, {
+          progress: ({ completed, total, label }) => {
+            this.ui.setTerrainGraphStatus(`${label} · ${completed}/${total}`, 'loading');
+          },
+        });
+      }
+
+      this.ui.setTerrainGraphStatus('Applying material pipeline...', 'loading');
+      if (prepared) {
+        const result = this.materialPackManager.commitPreparedPack(prepared, { materialProgram });
+        this.activeMaterialPackId = result.pack.id;
+        if (result.materialSettings) {
+          this.materialSettings = cloneMaterialSettings(result.materialSettings);
+          this.ui.syncMaterialSettings(this.materialSettings);
+        }
+        this.ui.setMaterialPacks(catalog, result.pack.id);
+      } else {
+        this.world.materialProgram = null;
+      }
+      Object.assign(this.generatorSettings, nextSettings);
       this.ui.syncGeneratorSettings(derived);
+      this.ui.setTerrainGraphStatus('Generating terrain chunks...', 'loading');
       await this.world.generate(this.generatorSettings);
       this.history.clear();
       this.ui.setHistoryState(false, false);
       this.#setSpawnToHighest(false);
+      this.terrainGraphPreview.request(
+        this.terrainGraph,
+        this.generatorSettings,
+        this.#terrainPreviewRequestOptions({ immediate: true }),
+      );
       this.ui.setTerrainGraphStatus('Terrain build complete', 'success');
       this.ui.toast('העולם נבנה מחדש מתוכנית הצמתים.');
     } catch (error) {
@@ -543,7 +603,7 @@ export class TerrainEditorApp {
     }
   }
 
-  async #applyMaterialPack(id, showBusy = true) {
+  async #applyMaterialPack(id, showBusy = true, materialProgram = null, throwOnError = false) {
     if (!id || !this.materialPackManager) return;
     if (showBusy) {
       this.ui.setBusy(true, 'מוריד ומחיל חומרי PBR אמיתיים...');
@@ -552,8 +612,14 @@ export class TerrainEditorApp {
     try {
       const result = await this.materialPackManager.applyPack(id, {
         progress: ({ completed, total, label }) => this.ui.setMaterialPackStatus(`${label} · ${completed}/${total}`, 'loading'),
+        materialProgram,
       });
       this.activeMaterialPackId = result.pack.id;
+      const packNode = this.terrainGraph.nodes.find((node) => node.type === 'material/pack');
+      if (packNode && packNode.properties.packId !== result.pack.id) {
+        packNode.properties.packId = result.pack.id;
+        this.terrainGraphEditor.setGraph(this.terrainGraph, { recordHistory: true });
+      }
       if (result.materialSettings) {
         this.materialSettings = cloneMaterialSettings(result.materialSettings);
         this.ui.syncMaterialSettings(this.materialSettings);
@@ -566,11 +632,23 @@ export class TerrainEditorApp {
       const warningText = result.warnings?.length ? ` · ${result.warnings.length} fallback(s)` : '';
       this.ui.setMaterialPackStatus(`${result.pack.name} · ${sourceLabel}${warningText}`, result.warnings?.length ? 'warning' : 'success');
       if (result.warnings?.length) console.warn('[Terrain Materials] Applied with neutral fallbacks:', result.warnings);
+      this.terrainGraphPreview?.request(
+        this.terrainGraph,
+        {
+          ...this.generatorSettings,
+          worldRadius: this.config.worldSizeKm * 500,
+          waterLevel: this.config.waterLevel,
+        },
+        this.#terrainPreviewRequestOptions({ immediate: true }),
+      );
       if (showBusy) this.ui.toast(`${result.pack.name} הוחלה עם מפות PBR אמיתיות על הקרקע הקיימת.`);
+      return result;
     } catch (error) {
       console.error(error);
       this.ui.setMaterialPackStatus(error.message, 'error');
       if (showBusy) this.ui.toast(error.message, 'error');
+      if (throwOnError) throw error;
+      return null;
     } finally {
       if (showBusy) this.ui.setBusy(false);
     }
@@ -821,19 +899,32 @@ export class TerrainEditorApp {
     this.ui.setBusy(true, 'טוען Large World Project...');
     try {
       const project = JSON.parse(await file.text());
-      const importedGraph = project.terrainGraph ?? createDefaultTerrainGraph({
+      if (project.materialPackDefinition?.source === 'custom') {
+        await this.materialPackManager.saveCustomPack(project.materialPackDefinition);
+        const catalog = this.materialPackManager.getCatalog();
+        this.ui.setMaterialPacks(catalog, project.materialPackDefinition.id);
+        this.terrainGraphEditor.setMaterialPackCatalog(catalog);
+      }
+      const graphFallbackSettings = {
         ...(project.generatorSettings ?? this.generatorSettings),
         worldRadius: this.config.worldSizeKm * 500,
         waterLevel: this.config.waterLevel,
-      });
+      };
+      const importedGraph = normalizeTerrainGraph(
+        project.terrainGraph ?? createDefaultTerrainGraph(graphFallbackSettings),
+        graphFallbackSettings,
+      );
       const graphValidation = validateTerrainGraph(importedGraph);
       if (!graphValidation.valid) {
         throw new Error(`Terrain graph in project is invalid: ${graphValidation.errors[0]}`);
       }
       project.terrainGraph = importedGraph;
+      const importedPipeline = compileTerrainPipeline(importedGraph, {
+        packCatalog: this.materialPackManager.getCatalog(),
+      });
       project.generatorSettings = {
         ...(project.generatorSettings ?? {}),
-        terrainProgram: compileTerrainGraph(importedGraph),
+        terrainProgram: importedPipeline.terrainProgram,
       };
       const result = TerrainSerializer.applyProject(project, { world: this.world, config: this.config });
       this.terrainGraph = result.terrainGraph ?? importedGraph;
@@ -841,7 +932,7 @@ export class TerrainEditorApp {
       this.terrainGraphPreview.request(this.terrainGraph, {
         ...this.generatorSettings,
         ...(result.generatorSettings ?? {}),
-      }, { immediate: true });
+      }, this.#terrainPreviewRequestOptions({ immediate: true }));
       if (result.generatorSettings) {
         Object.assign(this.generatorSettings, result.generatorSettings);
         this.ui.syncGeneratorSettings(result.generatorSettings);
@@ -867,16 +958,18 @@ export class TerrainEditorApp {
         await this.environmentSystem.applySettings(this.environmentSettings, { reloadEnvironment: true });
         this.ui.syncEnvironmentSettings(this.environmentSettings);
       }
-      if (result.materialPackDefinition?.source === 'custom') {
-        await this.materialPackManager.saveCustomPack(result.materialPackDefinition);
-        this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), result.materialPackDefinition.id);
-      }
-      if (result.materialPackId) {
-        const exists = this.materialPackManager.getCatalog().some((pack) => pack.id === result.materialPackId);
+      const graphPackId = importedPipeline.materialProgram?.packId ?? result.materialPackId;
+      if (graphPackId) {
+        const exists = this.materialPackManager.getCatalog().some((pack) => pack.id === graphPackId);
         if (exists) {
-          this.activeMaterialPackId = result.materialPackId;
-          this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), result.materialPackId);
-          await this.#applyMaterialPack(result.materialPackId, false);
+          this.ui.setMaterialPacks(this.materialPackManager.getCatalog(), graphPackId);
+          this.terrainGraphEditor.setMaterialPackCatalog(this.materialPackManager.getCatalog());
+          await this.#applyMaterialPack(
+            graphPackId,
+            false,
+            importedPipeline.materialProgram,
+            true,
+          );
         }
       }
       this.ui.setPreset(result.presetId);

@@ -1,4 +1,8 @@
 import { createTerrainProgramEvaluator } from './TerrainGraphCompiler.js';
+import {
+  createTerrainMaterialProgramEvaluator,
+  normalizeMaterialSplatPreset,
+} from './TerrainMaterialGraph.js';
 
 function fade(value) {
   return value * value * (3 - 2 * value);
@@ -144,6 +148,7 @@ function legacyTerrainHeightAt(worldX, worldZ, settings = {}) {
 }
 
 const terrainSamplerCache = new WeakMap();
+const materialEvaluatorCache = new WeakMap();
 
 export function createTerrainHeightSampler(settings = {}) {
   if (!settings.terrainProgram) {
@@ -232,7 +237,65 @@ function calculateCustomPackWeights(height, slopeDegrees, variation, pack, targe
   return normalizeWeights(target, offset, scale);
 }
 
+function isMaterialProgramLike(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const hasProgramStructure = (
+    Object.hasOwn(value, 'version')
+    || Object.hasOwn(value, 'packId')
+    || Object.hasOwn(value, 'masks')
+    || Object.hasOwn(value, 'distributionRules')
+    || Object.hasOwn(value, 'biomeBlends')
+  );
+  if (hasProgramStructure) return true;
+  if (Array.isArray(value.layers)) return false;
+  return (
+    Object.hasOwn(value, 'splatPreset')
+    || Object.hasOwn(value, 'globalBlend')
+    || Object.hasOwn(value, 'transitionNoise')
+  );
+}
+
 function calculateAutoWeights(height, slopeDegrees, variation, presetId, target, offset, scale, context = {}) {
+  if (isMaterialProgramLike(presetId)) {
+    let cached = materialEvaluatorCache.get(presetId);
+    if (!cached) {
+      cached = {
+        evaluate: createTerrainMaterialProgramEvaluator(presetId),
+        splatPreset: normalizeMaterialSplatPreset(presetId.splatPreset),
+        baseWeights: new Float64Array(4),
+        evaluatedWeights: new Float64Array(4),
+        context: {},
+      };
+      materialEvaluatorCache.set(presetId, cached);
+    }
+    calculateAutoWeights(
+      height,
+      slopeDegrees,
+      variation,
+      cached.splatPreset,
+      cached.baseWeights,
+      0,
+      1,
+      context,
+    );
+    cached.context.height = height;
+    cached.context.slope = slopeDegrees;
+    cached.context.slopeDegrees = slopeDegrees;
+    cached.context.variation = variation;
+    cached.context.waterLevel = context.waterLevel;
+    cached.context.curvature = context.curvature;
+    cached.context.moisture = context.moisture;
+    cached.context.exposure = context.exposure;
+    cached.context.coast = context.coast;
+    cached.context.erosion = context.erosion;
+    cached.evaluate(cached.context, cached.baseWeights, cached.evaluatedWeights);
+    target[offset] = cached.evaluatedWeights[0] * scale;
+    target[offset + 1] = cached.evaluatedWeights[1] * scale;
+    target[offset + 2] = cached.evaluatedWeights[2] * scale;
+    target[offset + 3] = cached.evaluatedWeights[3] * scale;
+    return target;
+  }
+
   if (presetId && typeof presetId === 'object' && Array.isArray(presetId.layers)) {
     return calculateCustomPackWeights(height, slopeDegrees, variation, presetId, target, offset, scale, context);
   }
@@ -365,17 +428,50 @@ export function smoothControlWeights(source, resolution, passes = 5) {
 }
 
 export function packControlWeights(source, output = new Uint8Array(source.length)) {
+  const fractions = new Float64Array(4);
+  const quantized = new Uint16Array(4);
   for (let offset = 0; offset < source.length; offset += 4) {
-    let a = Math.max(0, source[offset]);
-    let b = Math.max(0, source[offset + 1]);
-    let c = Math.max(0, source[offset + 2]);
-    let d = Math.max(0, source[offset + 3]);
-    const sum = a + b + c + d || 1;
-    a /= sum; b /= sum; c /= sum; d /= sum;
-    output[offset] = Math.round(a * 255);
-    output[offset + 1] = Math.round(b * 255);
-    output[offset + 2] = Math.round(c * 255);
-    output[offset + 3] = Math.max(0, 255 - output[offset] - output[offset + 1] - output[offset + 2]);
+    const a = Number.isFinite(source[offset]) ? Math.max(0, source[offset]) : 0;
+    const b = Number.isFinite(source[offset + 1]) ? Math.max(0, source[offset + 1]) : 0;
+    const c = Number.isFinite(source[offset + 2]) ? Math.max(0, source[offset + 2]) : 0;
+    const d = Number.isFinite(source[offset + 3]) ? Math.max(0, source[offset + 3]) : 0;
+    const sum = a + b + c + d;
+    if (sum <= 0) {
+      output[offset] = 0;
+      output[offset + 1] = 0;
+      output[offset + 2] = 0;
+      output[offset + 3] = 255;
+      continue;
+    }
+
+    const maximum = Math.max(a, b, c, d);
+    const scaledA = a / maximum;
+    const scaledB = b / maximum;
+    const scaledC = c / maximum;
+    const scaledD = d / maximum;
+    const scaledSum = scaledA + scaledB + scaledC + scaledD;
+    fractions[0] = scaledA / scaledSum * 255;
+    fractions[1] = scaledB / scaledSum * 255;
+    fractions[2] = scaledC / scaledSum * 255;
+    fractions[3] = scaledD / scaledSum * 255;
+    let assigned = 0;
+    for (let channel = 0; channel < 4; channel += 1) {
+      quantized[channel] = Math.floor(fractions[channel]);
+      fractions[channel] -= quantized[channel];
+      assigned += quantized[channel];
+    }
+    for (let remaining = 255 - assigned; remaining > 0; remaining -= 1) {
+      let bestChannel = 0;
+      for (let channel = 1; channel < 4; channel += 1) {
+        if (fractions[channel] > fractions[bestChannel]) bestChannel = channel;
+      }
+      quantized[bestChannel] += 1;
+      fractions[bestChannel] = -1;
+    }
+    output[offset] = quantized[0];
+    output[offset + 1] = quantized[1];
+    output[offset + 2] = quantized[2];
+    output[offset + 3] = quantized[3];
   }
   return output;
 }

@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDefaultTerrainGraph } from '../src/terrain/TerrainGraphModel.js';
-import { compileTerrainGraph, createTerrainProgramEvaluator } from '../src/terrain/TerrainGraphCompiler.js';
+import {
+  TERRAIN_GRAPH_VERSION,
+  createDefaultTerrainGraph,
+} from '../src/terrain/TerrainGraphModel.js';
+import {
+  compileTerrainGraph,
+  compileTerrainPipeline,
+  createTerrainProgramEvaluator,
+} from '../src/terrain/TerrainGraphCompiler.js';
+import { BUILTIN_TERRAIN_MATERIAL_PACKS } from '../src/terrain/TerrainMaterialPacks.js';
 import { createTerrainHeightSampler, terrainHeightAt } from '../src/terrain/noise.js';
 
 const runtime = {
@@ -19,9 +27,50 @@ test('compiler topologically orders the default terrain graph', () => {
   const instructionIndex = new Map(program.instructions.map((instruction, index) => [instruction.nodeId, index]));
 
   for (const link of graph.links) {
+    if (!instructionIndex.has(link.fromNode) || !instructionIndex.has(link.toNode)) continue;
     assert.ok(instructionIndex.get(link.fromNode) < instructionIndex.get(link.toNode));
   }
   assert.equal(program.instructions.at(-1).op, 'terrainOutput');
+  assert.equal(program.version, TERRAIN_GRAPH_VERSION);
+  assert.equal(
+    program.instructions.some((instruction) => instruction.title === 'Material Pack'),
+    false,
+  );
+});
+
+test('terrain pipeline compiles the height and material branches from Material Output', () => {
+  const graph = createDefaultTerrainGraph({ materialPackId: 'alpine' });
+  const pipeline = compileTerrainPipeline(graph, {
+    packCatalog: Object.values(BUILTIN_TERRAIN_MATERIAL_PACKS),
+  });
+
+  assert.deepEqual(pipeline.terrainProgram, compileTerrainGraph(graph));
+  assert.equal(pipeline.materialProgram.packId, 'alpine');
+  assert.equal(pipeline.materialProgram.splatPreset, 'alpine');
+  assert.equal(
+    pipeline.terrainProgram.instructions.some((instruction) => (
+      instruction.title === 'Material Pack'
+    )),
+    false,
+  );
+});
+
+test('terrain pipeline returns no material program for a legacy Terrain Output graph', () => {
+  const graph = createDefaultTerrainGraph();
+  const output = graph.nodes.find((node) => node.type === 'terrain/materialOutput');
+  const materialPack = graph.nodes.find((node) => node.type === 'material/pack');
+  output.type = 'terrain/output';
+  output.title = 'Terrain Output';
+  graph.nodes = graph.nodes.filter((node) => node.id !== materialPack.id);
+  graph.links = graph.links.filter((link) => (
+    link.fromNode !== materialPack.id
+    && !(link.toNode === output.id && link.toSocket === 'material')
+  ));
+
+  const pipeline = compileTerrainPipeline(graph, { packCatalog: [] });
+
+  assert.deepEqual(pipeline.terrainProgram, compileTerrainGraph(graph));
+  assert.equal(pipeline.materialProgram, null);
 });
 
 test('compiled terrain program is deterministic and responds to seed changes', () => {
@@ -40,7 +89,7 @@ test('compiled terrain program is deterministic and responds to seed changes', (
 
 test('field instructions perform numeric transforms and combinations', () => {
   const program = {
-    version: 1,
+    version: TERRAIN_GRAPH_VERSION,
     slotCount: 11,
     outputSlot: 10,
     instructions: [
@@ -62,12 +111,100 @@ test('field instructions perform numeric transforms and combinations', () => {
   assert.equal(evaluate(0, 0), 0.2);
 });
 
+test('terrain program evaluator normalizes omitted instruction properties to an empty object', () => {
+  const program = {
+    version: TERRAIN_GRAPH_VERSION,
+    slotCount: 2,
+    outputSlot: 1,
+    instructions: [
+      { op: 'constant', slot: 0, inputs: {} },
+      { op: 'terrainOutput', slot: 1, inputs: { terrain: 0 } },
+    ],
+  };
+
+  const evaluate = createTerrainProgramEvaluator(program, runtime);
+
+  assert.equal(evaluate(12, -8), 0);
+});
+
+test('terrain program evaluator rejects unsupported program versions before sampling', () => {
+  const program = compileTerrainGraph(createDefaultTerrainGraph());
+  program.version = TERRAIN_GRAPH_VERSION - 1;
+
+  assert.throws(
+    () => createTerrainProgramEvaluator(program, runtime),
+    /unsupported terrain program version 1/i,
+  );
+});
+
+test('terrain program evaluator rejects invalid slot counts and output slots', () => {
+  const program = compileTerrainGraph(createDefaultTerrainGraph());
+
+  assert.throws(
+    () => createTerrainProgramEvaluator({ ...program, slotCount: -1 }, runtime),
+    /slotCount.*positive integer/i,
+  );
+  assert.throws(
+    () => createTerrainProgramEvaluator({ ...program, outputSlot: program.slotCount }, runtime),
+    /outputSlot.*bounds/i,
+  );
+});
+
+test('terrain program evaluator rejects duplicate, out-of-bounds, and missing input slots', () => {
+  const program = compileTerrainGraph(createDefaultTerrainGraph());
+  const duplicate = structuredClone(program);
+  duplicate.instructions[1].slot = duplicate.instructions[0].slot;
+  const outOfBounds = structuredClone(program);
+  outOfBounds.instructions[0].slot = outOfBounds.slotCount;
+  const missingInput = structuredClone(program);
+  const target = missingInput.instructions.find((instruction) => (
+    Object.keys(instruction.inputs).length > 0
+  ));
+  target.inputs[Object.keys(target.inputs)[0]] = missingInput.slotCount - 0.5;
+
+  assert.throws(
+    () => createTerrainProgramEvaluator(duplicate, runtime),
+    /duplicate instruction slot/i,
+  );
+  assert.throws(
+    () => createTerrainProgramEvaluator(outOfBounds, runtime),
+    /instruction slot.*bounds/i,
+  );
+  assert.throws(
+    () => createTerrainProgramEvaluator(missingInput, runtime),
+    /input slot.*integer/i,
+  );
+});
+
+test('terrain program evaluator rejects unknown ops and invalid input references', () => {
+  const program = compileTerrainGraph(createDefaultTerrainGraph());
+  const unknownOp = structuredClone(program);
+  unknownOp.instructions[0].op = 'executeArbitraryCode';
+  const futureReference = structuredClone(program);
+  const targetIndex = futureReference.instructions.findIndex((instruction) => (
+    Object.keys(instruction.inputs).length > 0
+  ));
+  const target = futureReference.instructions[targetIndex];
+  target.inputs[Object.keys(target.inputs)[0]] = futureReference.instructions.at(-1).slot;
+
+  assert.throws(
+    () => createTerrainProgramEvaluator(unknownOp, runtime),
+    /unsupported terrain program operation/i,
+  );
+  assert.throws(
+    () => createTerrainProgramEvaluator(futureReference, runtime),
+    /input slot.*earlier instruction/i,
+  );
+});
+
 test('compiler reports a missing required connection with the node title', () => {
   const graph = createDefaultTerrainGraph();
-  const output = graph.nodes.find((node) => node.type === 'terrain/output');
-  graph.links = graph.links.filter((link) => link.toNode !== output.id);
+  const output = graph.nodes.find((node) => node.type === 'terrain/materialOutput');
+  graph.links = graph.links.filter((link) => (
+    link.toNode !== output.id || link.toSocket !== 'terrain'
+  ));
 
-  assert.throws(() => compileTerrainGraph(graph), /Terrain Output.*missing/i);
+  assert.throws(() => compileTerrainGraph(graph), /Material Output.*missing.*Terrain/i);
 });
 
 test('default island program produces finite terrain and a deeper outer ocean', () => {

@@ -1,10 +1,113 @@
-export const TERRAIN_GRAPH_VERSION = 1;
+export const TERRAIN_GRAPH_VERSION = 2;
 
 const fieldInput = (name, label, required = true) => ({ name, label, type: 'field', required });
 const coordinateInput = (name = 'coordinate', label = 'Coordinates') => ({ name, label, type: 'coordinate', required: true });
+const materialInput = (name = 'material', label = 'Material') => ({ name, label, type: 'material', required: true });
+const maskInput = (name = 'mask', label = 'Mask') => ({ name, label, type: 'mask', required: true });
+const terrainInput = (name = 'terrain', label = 'Terrain') => ({ name, label, type: 'terrain', required: true });
 const output = (name, label, type) => ({ name, label, type });
 
-export const TERRAIN_NODE_DEFINITIONS = Object.freeze({
+const numberProperty = (label, defaultValue, min, max, step) => ({
+  label,
+  default: defaultValue,
+  widget: 'number',
+  min,
+  max,
+  step,
+});
+
+const comboProperty = (label, defaultValue, options) => ({
+  label,
+  default: defaultValue,
+  widget: 'combo',
+  ...(Array.isArray(options) ? { options } : { optionsSource: options }),
+});
+
+const toggleProperty = (label, defaultValue = false) => ({
+  label,
+  default: defaultValue,
+  widget: 'toggle',
+});
+
+function defaultsFromProperties(properties) {
+  return Object.fromEntries(
+    Object.entries(properties).map(([name, descriptor]) => [name, descriptor.default]),
+  );
+}
+
+function materialNodeDefinition(definition, properties = {}) {
+  return {
+    ...definition,
+    properties,
+    defaults: defaultsFromProperties(properties),
+  };
+}
+
+function deepFreeze(value, seen = new WeakSet()) {
+  if (
+    value === null
+    || (typeof value !== 'object' && typeof value !== 'function')
+    || seen.has(value)
+  ) {
+    return value;
+  }
+  seen.add(value);
+  for (const nested of Reflect.ownKeys(value)) deepFreeze(value[nested], seen);
+  return Object.freeze(value);
+}
+
+const MATERIAL_LAYERS = Object.freeze(['sand', 'grass', 'soil', 'rock']);
+const HEIGHT_MIN = -1000;
+const HEIGHT_MAX = 2000;
+
+const MATERIAL_PACK_PROPERTIES = {
+  packId: comboProperty('Material Pack', 'mediterranean', 'materialPacks'),
+  globalBlend: numberProperty('Global Blend', 1, 0.1, 3, 0.05),
+  transitionNoise: numberProperty('Transition Noise', 0.2, 0, 1, 0.01),
+};
+
+const LAYER_DISTRIBUTION_PROPERTIES = {
+  layer: comboProperty('Layer', 'sand', MATERIAL_LAYERS),
+  minHeight: numberProperty('Minimum Height', -48, HEIGHT_MIN, HEIGHT_MAX, 1),
+  maxHeight: numberProperty('Maximum Height', 220, HEIGHT_MIN, HEIGHT_MAX, 1),
+  heightBlend: numberProperty('Height Blend', 18, 0, 500, 1),
+  minSlope: numberProperty('Minimum Slope', 0, 0, 90, 0.5),
+  maxSlope: numberProperty('Maximum Slope', 72, 0, 90, 0.5),
+  slopeBlend: numberProperty('Slope Blend', 12, 0, 90, 0.5),
+  moistureAffinity: numberProperty('Moisture Affinity', 0, -1, 1, 0.01),
+  coastAffinity: numberProperty('Coast Affinity', 0, -1, 1, 0.01),
+  erosionAffinity: numberProperty('Erosion Affinity', 0, -1, 1, 0.01),
+  curvatureBias: numberProperty('Curvature Bias', 0, -1, 1, 0.01),
+  priority: numberProperty('Priority', 1, 0.01, 4, 0.01),
+};
+
+const HEIGHT_SLOPE_MASK_PROPERTIES = {
+  minHeight: numberProperty('Minimum Height', -48, HEIGHT_MIN, HEIGHT_MAX, 1),
+  maxHeight: numberProperty('Maximum Height', 220, HEIGHT_MIN, HEIGHT_MAX, 1),
+  heightBlend: numberProperty('Height Blend', 18, 0, 500, 1),
+  minSlope: numberProperty('Minimum Slope', 0, 0, 90, 0.5),
+  maxSlope: numberProperty('Maximum Slope', 72, 0, 90, 0.5),
+  slopeBlend: numberProperty('Slope Blend', 12, 0, 90, 0.5),
+  invert: toggleProperty('Invert'),
+};
+
+const MOISTURE_EROSION_MASK_PROPERTIES = {
+  minMoisture: numberProperty('Minimum Moisture', 0, 0, 1, 0.01),
+  maxMoisture: numberProperty('Maximum Moisture', 1, 0, 1, 0.01),
+  moistureBlend: numberProperty('Moisture Blend', 0.1, 0, 1, 0.01),
+  minErosion: numberProperty('Minimum Erosion', 0, 0, 1, 0.01),
+  maxErosion: numberProperty('Maximum Erosion', 1, 0, 1, 0.01),
+  erosionBlend: numberProperty('Erosion Blend', 0.1, 0, 1, 0.01),
+  invert: toggleProperty('Invert'),
+};
+
+const BIOME_BLEND_PROPERTIES = {
+  fromLayer: comboProperty('From Layer', 'sand', MATERIAL_LAYERS),
+  toLayer: comboProperty('To Layer', 'grass', MATERIAL_LAYERS),
+  strength: numberProperty('Strength', 1, 0, 1, 0.01),
+};
+
+export const TERRAIN_NODE_DEFINITIONS = deepFreeze({
   'world/coordinates': {
     title: 'World Coordinates',
     category: 'Sources',
@@ -106,13 +209,49 @@ export const TERRAIN_NODE_DEFINITIONS = Object.freeze({
       oceanDepth: 52,
     },
   },
+  'material/pack': materialNodeDefinition({
+    title: 'Material Pack',
+    category: 'Materials',
+    inputs: [],
+    outputs: [output('material', 'Material', 'material')],
+  }, MATERIAL_PACK_PROPERTIES),
+  'material/layerDistribution': materialNodeDefinition({
+    title: 'Layer Distribution',
+    category: 'Materials',
+    inputs: [materialInput()],
+    outputs: [output('material', 'Material', 'material')],
+  }, LAYER_DISTRIBUTION_PROPERTIES),
+  'mask/heightSlope': materialNodeDefinition({
+    title: 'Height / Slope Mask',
+    category: 'Masks',
+    inputs: [],
+    outputs: [output('mask', 'Mask', 'mask')],
+  }, HEIGHT_SLOPE_MASK_PROPERTIES),
+  'mask/moistureErosion': materialNodeDefinition({
+    title: 'Moisture / Erosion Mask',
+    category: 'Masks',
+    inputs: [],
+    outputs: [output('mask', 'Mask', 'mask')],
+  }, MOISTURE_EROSION_MASK_PROPERTIES),
+  'material/biomeBlend': materialNodeDefinition({
+    title: 'Biome Blend',
+    category: 'Materials',
+    inputs: [materialInput(), maskInput()],
+    outputs: [output('material', 'Material', 'material')],
+  }, BIOME_BLEND_PROPERTIES),
   'terrain/output': {
     title: 'Terrain Output',
     category: 'Output',
-    inputs: [{ name: 'terrain', label: 'Terrain', type: 'terrain', required: true }],
+    inputs: [terrainInput()],
     outputs: [],
     defaults: {},
   },
+  'terrain/materialOutput': materialNodeDefinition({
+    title: 'Material Output',
+    category: 'Output',
+    inputs: [terrainInput(), materialInput()],
+    outputs: [],
+  }),
 });
 
 function clone(value) {
@@ -123,6 +262,51 @@ function clone(value) {
 
 export function cloneTerrainGraph(graph) {
   return clone(graph);
+}
+
+export function normalizeTerrainGraph(input, fallbackSettings = {}) {
+  if (input == null) return createDefaultTerrainGraph(fallbackSettings);
+  if (
+    typeof input !== 'object'
+    || Array.isArray(input)
+    || !Array.isArray(input.nodes)
+    || !Array.isArray(input.links)
+  ) {
+    throw new Error('Terrain graph format is invalid.');
+  }
+
+  const sourceVersion = Number(input.version ?? 1);
+  if (sourceVersion !== 1 && sourceVersion !== TERRAIN_GRAPH_VERSION) {
+    throw new Error(`Unsupported terrain graph version ${String(input.version ?? sourceVersion)}.`);
+  }
+
+  const normalized = cloneTerrainGraph(input);
+  normalized.version = TERRAIN_GRAPH_VERSION;
+  normalized.nextNodeId = nextGraphId(normalized.nodes, 'node');
+  normalized.nextLinkId = nextGraphId(normalized.links, 'link');
+  normalized.view ??= { scale: 1, offset: [0, 0] };
+  return normalized;
+}
+
+function isGraphId(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function nextGraphId(entries, kind) {
+  let maximum = 0;
+  for (const entry of entries) {
+    if (isGraphId(entry?.id)) maximum = Math.max(maximum, entry.id);
+  }
+  if (maximum === Number.MAX_SAFE_INTEGER) {
+    throw new Error(
+      `Terrain graph ${kind} id space reached Number.MAX_SAFE_INTEGER and is exhausted.`,
+    );
+  }
+  return maximum + 1;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function createNode(id, type, position, properties = {}, role = null) {
@@ -137,7 +321,16 @@ function createNode(id, type, position, properties = {}, role = null) {
   };
 }
 
+function assertIncrementableCounter(value, name) {
+  if (!isGraphId(value) || value >= Number.MAX_SAFE_INTEGER) {
+    throw new Error(
+      `Terrain graph ${name} must be a non-negative safe integer below Number.MAX_SAFE_INTEGER.`,
+    );
+  }
+}
+
 function appendNode(graph, type, position, properties = {}, role = null) {
+  assertIncrementableCounter(graph.nextNodeId, 'nextNodeId');
   const node = createNode(graph.nextNodeId, type, position, properties, role);
   graph.nextNodeId += 1;
   graph.nodes.push(node);
@@ -145,6 +338,7 @@ function appendNode(graph, type, position, properties = {}, role = null) {
 }
 
 function appendLink(graph, fromNode, fromSocket, toNode, toSocket) {
+  assertIncrementableCounter(graph.nextLinkId, 'nextLinkId');
   graph.links.push({
     id: graph.nextLinkId,
     fromNode,
@@ -186,6 +380,13 @@ function buildDefaultProperties(settings = {}) {
     coastIrregularity: finite(settings.coastIrregularity, 0.18),
     oceanDepth: finite(settings.oceanDepth, 52),
   };
+}
+
+function packIdFromSettings(settings = {}) {
+  for (const value of [settings.materialPackId, settings.presetId]) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return 'mediterranean';
 }
 
 export function createDefaultTerrainGraph(settings = {}) {
@@ -253,7 +454,10 @@ export function createDefaultTerrainGraph(settings = {}) {
     coastIrregularity: values.coastIrregularity,
     oceanDepth: values.oceanDepth,
   }, 'island');
-  const terrainOutput = appendNode(graph, 'terrain/output', [1660, 250], {}, 'output');
+  const materialPack = appendNode(graph, 'material/pack', [1410, 500], {
+    packId: packIdFromSettings(settings),
+  }, 'materialPack');
+  const materialOutput = appendNode(graph, 'terrain/materialOutput', [1660, 250], {}, 'output');
 
   appendLink(graph, coordinates.id, 'coordinate', warp.id, 'coordinate');
   appendLink(graph, warp.id, 'coordinate', broad.id, 'coordinate');
@@ -269,7 +473,8 @@ export function createDefaultTerrainGraph(settings = {}) {
   appendLink(graph, addAll.id, 'field', terrace.id, 'field');
   appendLink(graph, terrace.id, 'field', island.id, 'field');
   appendLink(graph, coordinates.id, 'coordinate', island.id, 'coordinate');
-  appendLink(graph, island.id, 'terrain', terrainOutput.id, 'terrain');
+  appendLink(graph, island.id, 'terrain', materialOutput.id, 'terrain');
+  appendLink(graph, materialPack.id, 'material', materialOutput.id, 'material');
   return graph;
 }
 
@@ -290,17 +495,18 @@ function findSocket(definition, direction, name) {
   return definition?.[direction]?.find((socket) => socket.name === name) ?? null;
 }
 
-function graphHasCycle(graph) {
-  const outgoing = new Map(graph.nodes.map((node) => [node.id, []]));
-  const incomingCount = new Map(graph.nodes.map((node) => [node.id, 0]));
-  for (const link of graph.links) {
-    outgoing.get(link.fromNode)?.push(link.toNode);
-    incomingCount.set(link.toNode, (incomingCount.get(link.toNode) ?? 0) + 1);
+function graphHasCycle(nodeIds, links) {
+  const outgoing = new Map([...nodeIds].map((id) => [id, []]));
+  const incomingCount = new Map([...nodeIds].map((id) => [id, 0]));
+  for (const link of links) {
+    if (!nodeIds.has(link.fromNode) || !nodeIds.has(link.toNode)) continue;
+    outgoing.get(link.fromNode).push(link.toNode);
+    incomingCount.set(link.toNode, incomingCount.get(link.toNode) + 1);
   }
   const queue = [...incomingCount.entries()].filter(([, count]) => count === 0).map(([id]) => id);
   let visited = 0;
-  while (queue.length) {
-    const id = queue.shift();
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const id = queue[queueIndex];
     visited += 1;
     for (const target of outgoing.get(id) ?? []) {
       const count = incomingCount.get(target) - 1;
@@ -308,7 +514,7 @@ function graphHasCycle(graph) {
       if (count === 0) queue.push(target);
     }
   }
-  return visited !== graph.nodes.length;
+  return visited !== nodeIds.size;
 }
 
 export function connectTerrainGraphNodes(graph, connection) {
@@ -326,7 +532,10 @@ export function connectTerrainGraphNodes(graph, connection) {
     throw new Error(`Input ${toSocket.name} is already connected.`);
   }
   appendLink(next, from.id, fromSocket.name, to.id, toSocket.name);
-  if (graphHasCycle(next)) throw new Error('Terrain graph connections cannot create a cycle.');
+  const nodeIds = new Set(next.nodes.map((node) => node.id));
+  if (graphHasCycle(nodeIds, next.links)) {
+    throw new Error('Terrain graph connections cannot create a cycle.');
+  }
   return { graph: next, link: clone(next.links.at(-1)) };
 }
 
@@ -338,38 +547,139 @@ export function disconnectTerrainGraphLink(graph, linkId) {
 
 export function validateTerrainGraph(graph) {
   const errors = [];
-  if (!graph || graph.version !== TERRAIN_GRAPH_VERSION || !Array.isArray(graph.nodes) || !Array.isArray(graph.links)) {
+  if (
+    !isRecord(graph)
+    || graph.version !== TERRAIN_GRAPH_VERSION
+    || !Array.isArray(graph.nodes)
+    || !Array.isArray(graph.links)
+  ) {
     return { valid: false, errors: ['Terrain graph format is invalid.'] };
   }
-  const ids = new Set();
-  for (const node of graph.nodes) {
-    if (ids.has(node.id)) errors.push(`Duplicate terrain node id ${node.id}.`);
-    ids.add(node.id);
-    if (!TERRAIN_NODE_DEFINITIONS[node.type]) errors.push(`Unknown terrain node type ${node.type}.`);
+
+  if (
+    !isRecord(graph.view)
+    || !Number.isFinite(graph.view.scale)
+    || graph.view.scale <= 0
+    || !Array.isArray(graph.view.offset)
+    || graph.view.offset.length < 2
+    || !Number.isFinite(graph.view.offset[0])
+    || !Number.isFinite(graph.view.offset[1])
+  ) {
+    errors.push('Terrain graph view must contain a positive finite scale and two finite offset values.');
   }
-  const outputs = graph.nodes.filter((node) => node.type === 'terrain/output');
-  if (outputs.length !== 1) errors.push('Terrain graph must contain exactly one Terrain Output node.');
+
+  const nodeById = new Map();
+  const validNodes = [];
+  for (let index = 0; index < graph.nodes.length; index += 1) {
+    const node = graph.nodes[index];
+    if (!isRecord(node)) {
+      errors.push(`Terrain node at index ${index} must be an object.`);
+      continue;
+    }
+    if (!isGraphId(node.id)) {
+      errors.push(
+        `Terrain node id at index ${index} must be a non-negative integer accepted by Number.isSafeInteger.`,
+      );
+    } else if (nodeById.has(node.id)) {
+      errors.push(`Duplicate terrain node id ${node.id}.`);
+    } else {
+      nodeById.set(node.id, node);
+    }
+    if (typeof node.type !== 'string' || !TERRAIN_NODE_DEFINITIONS[node.type]) {
+      errors.push(`Unknown terrain node type ${String(node.type)}.`);
+    }
+    if (
+      !Array.isArray(node.position)
+      || node.position.length < 2
+      || !Number.isFinite(node.position[0])
+      || !Number.isFinite(node.position[1])
+    ) {
+      errors.push(`Terrain node ${String(node.id ?? `at index ${index}`)} position must contain two finite numbers.`);
+    }
+    if (!isRecord(node.properties)) {
+      errors.push(`Terrain node ${String(node.id ?? `at index ${index}`)} properties must be an object.`);
+    }
+    if (isGraphId(node.id) && TERRAIN_NODE_DEFINITIONS[node.type]) validNodes.push(node);
+  }
+
+  const maximumNodeId = validNodes.reduce((maximum, node) => Math.max(maximum, node.id), 0);
+  if (!isGraphId(graph.nextNodeId) || graph.nextNodeId <= maximumNodeId) {
+    errors.push('Terrain graph nextNodeId must be an integer greater than every node id.');
+  }
+
+  const outputs = validNodes.filter((node) => (
+    node.type === 'terrain/output' || node.type === 'terrain/materialOutput'
+  ));
+  if (outputs.length !== 1) {
+    errors.push('Terrain graph must contain exactly one effective terminal: Terrain Output or Material Output.');
+  }
 
   const occupiedInputs = new Set();
-  for (const link of graph.links) {
-    const from = graph.nodes.find((node) => node.id === link.fromNode);
-    const to = graph.nodes.find((node) => node.id === link.toNode);
+  const linkIds = new Set();
+  const cycleLinks = [];
+  const validTypedLinks = [];
+  let maximumLinkId = 0;
+  for (let index = 0; index < graph.links.length; index += 1) {
+    const link = graph.links[index];
+    if (!isRecord(link)) {
+      errors.push(`Terrain link at index ${index} must be an object.`);
+      continue;
+    }
+    if (!isGraphId(link.id)) {
+      errors.push(
+        `Terrain link id at index ${index} must be a non-negative integer accepted by Number.isSafeInteger.`,
+      );
+    } else {
+      maximumLinkId = Math.max(maximumLinkId, link.id);
+      if (linkIds.has(link.id)) errors.push(`Duplicate terrain link id ${link.id}.`);
+      linkIds.add(link.id);
+    }
+    if (!isGraphId(link.fromNode)) {
+      errors.push(
+        `Terrain link ${String(link.id ?? `at index ${index}`)} fromNode must be a non-negative integer accepted by Number.isSafeInteger.`,
+      );
+    }
+    if (!isGraphId(link.toNode)) {
+      errors.push(
+        `Terrain link ${String(link.id ?? `at index ${index}`)} toNode must be a non-negative integer accepted by Number.isSafeInteger.`,
+      );
+    }
+    if (typeof link.fromSocket !== 'string' || !link.fromSocket) {
+      errors.push(`Terrain link ${String(link.id ?? `at index ${index}`)} fromSocket must be a non-empty string.`);
+    }
+    if (typeof link.toSocket !== 'string' || !link.toSocket) {
+      errors.push(`Terrain link ${String(link.id ?? `at index ${index}`)} toSocket must be a non-empty string.`);
+    }
+
+    const from = nodeById.get(link.fromNode);
+    const to = nodeById.get(link.toNode);
     const fromSocket = findSocket(TERRAIN_NODE_DEFINITIONS[from?.type], 'outputs', link.fromSocket);
     const toSocket = findSocket(TERRAIN_NODE_DEFINITIONS[to?.type], 'inputs', link.toSocket);
     if (!from || !to || !fromSocket || !toSocket) {
-      errors.push(`Terrain link ${link.id} references a missing node or socket.`);
+      errors.push(`Terrain link ${String(link.id ?? `at index ${index}`)} references a missing node or socket.`);
       continue;
     }
-    if (fromSocket.type !== toSocket.type) errors.push(`Terrain link ${link.id} has incompatible socket types.`);
+    cycleLinks.push(link);
+    if (fromSocket.type !== toSocket.type) {
+      errors.push(`Terrain link ${link.id} has incompatible socket types.`);
+      continue;
+    }
     const inputKey = `${to.id}:${toSocket.name}`;
     if (occupiedInputs.has(inputKey)) errors.push(`Terrain input ${inputKey} has more than one connection.`);
     occupiedInputs.add(inputKey);
+    validTypedLinks.push(link);
   }
-  if (graphHasCycle(graph)) errors.push('Terrain graph contains a cycle.');
+
+  if (!isGraphId(graph.nextLinkId) || graph.nextLinkId <= maximumLinkId) {
+    errors.push('Terrain graph nextLinkId must be an integer greater than every link id.');
+  }
+  if (graphHasCycle(new Set(nodeById.keys()), cycleLinks)) {
+    errors.push('Terrain graph contains a cycle.');
+  }
 
   const requiredNodeIds = new Set(outputs.map((node) => node.id));
   const sourceNodesByTarget = new Map();
-  for (const link of graph.links) {
+  for (const link of validTypedLinks) {
     if (!sourceNodesByTarget.has(link.toNode)) sourceNodesByTarget.set(link.toNode, []);
     sourceNodesByTarget.get(link.toNode).push(link.fromNode);
   }
@@ -382,7 +692,7 @@ export function validateTerrainGraph(graph) {
       pendingRequired.push(sourceId);
     }
   }
-  for (const node of graph.nodes) {
+  for (const node of validNodes) {
     if (!requiredNodeIds.has(node.id)) continue;
     const definition = TERRAIN_NODE_DEFINITIONS[node.type];
     for (const input of definition?.inputs ?? []) {
@@ -452,7 +762,11 @@ export function syncSettingsToTerrainGraph(graph, settings = {}) {
 }
 
 export function deriveSettingsFromTerrainGraph(graph, fallbackSettings = {}) {
-  const { terrainProgram: _staleTerrainProgram, ...result } = fallbackSettings ?? {};
+  const {
+    terrainProgram: _staleTerrainProgram,
+    materialProgram: _staleMaterialProgram,
+    ...result
+  } = fallbackSettings ?? {};
   const node = (role) => graph?.nodes?.find((candidate) => candidate.role === role)?.properties ?? {};
   const broad = node('broad');
   const warp = node('warp');

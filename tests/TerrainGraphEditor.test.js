@@ -49,6 +49,31 @@ test('terrain node registration initializes missing LiteGraph link colors', () =
   assert.equal(liteGraph.link_type_colors.coordinate, '#4aa8c7');
   assert.equal(liteGraph.link_type_colors.field, '#66c784');
   assert.equal(liteGraph.link_type_colors.terrain, '#4fd4bd');
+  assert.equal(liteGraph.link_type_colors.material, '#d9825b');
+  assert.equal(liteGraph.link_type_colors.mask, '#d3a54d');
+});
+
+test('material inspector exposes schema-driven combo and bounded number fields', () => {
+  const model = buildTerrainNodeInspectorModel({
+    id: 20,
+    type: 'material/pack',
+    properties: { packId: 'alpine', globalBlend: 1, transitionNoise: 0.2 },
+  }, {
+    materialPacks: [
+      { value: 'mediterranean', label: 'Mediterranean' },
+      { value: 'alpine', label: 'Alpine' },
+    ],
+  });
+
+  assert.equal(model.fields[0].widget, 'combo');
+  assert.deepEqual(model.fields[0].options, [
+    { value: 'mediterranean', label: 'Mediterranean' },
+    { value: 'alpine', label: 'Alpine' },
+  ]);
+  assert.equal(model.fields[1].widget, 'number');
+  assert.equal(model.fields[1].min, 0.1);
+  assert.equal(model.fields[1].max, 3);
+  assert.equal(model.canEditPack, true);
 });
 
 test('readable node rendering preserves text quality below LiteGraph zoom threshold', () => {

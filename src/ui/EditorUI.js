@@ -288,9 +288,13 @@ export class EditorUI {
                 <div class="terrain-side-resize" data-terrain-side-resize role="separator" tabindex="0" aria-label="Resize selected node and preview panels" aria-orientation="horizontal" aria-valuemin="96"></div>
                 <section class="terrain-preview-pane">
                   <div class="terrain-preview-heading"><b>Preview</b><span id="terrain-graph-status" data-state="idle">Ready</span></div>
+                  <div class="terrain-preview-modes" role="tablist" aria-label="Preview mode">
+                    ${['height', 'materials', 'slope', 'moisture', 'erosion'].map((mode, index) => `<button type="button" role="tab" data-preview-mode="${mode}" aria-selected="${index === 0}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')}
+                  </div>
                   <div class="terrain-preview-canvas-wrap">
                     <canvas id="terrain-graph-preview" width="256" height="256" data-preview-enabled="true"></canvas>
                   </div>
+                  <div class="terrain-preview-legend" data-terrain-preview-legend></div>
                 </section>
               </aside>
             </div>
@@ -305,6 +309,7 @@ export class EditorUI {
     this.terrainGraphRoot = this.root.querySelector('#terrain-graph-dock');
     this.terrainGraphPreviewCanvas = this.root.querySelector('#terrain-graph-preview');
     this.terrainGraphStatus = this.root.querySelector('#terrain-graph-status');
+    this.terrainGraphPreviewLegend = this.root.querySelector('[data-terrain-preview-legend]');
     this.root.querySelector('#shadow-map-size').value = String(this.environmentSettings.shadowMapSize ?? 8192);
     this.#updatePresetPresentation(presetId);
     this.#updateEnvironmentPresentation(this.environmentSettings.presetId ?? 'summer');
@@ -352,6 +357,14 @@ export class EditorUI {
       });
     }
     const graphDock = this.root.querySelector('#terrain-graph-dock');
+    graphDock.querySelectorAll('[data-preview-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        graphDock.querySelectorAll('[data-preview-mode]').forEach((item) => {
+          item.setAttribute('aria-selected', String(item === button));
+        });
+        this.emit('terrain-preview-mode', button.dataset.previewMode);
+      });
+    });
     const collapseButton = graphDock.querySelector('[data-graph-collapse]');
     collapseButton.addEventListener('click', () => {
       const collapsed = graphDock.classList.toggle('collapsed');

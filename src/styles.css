@@ -101,11 +101,11 @@ button:disabled { opacity:.35; cursor:not-allowed; }
 
 /* Terrain node graph */
 .terrain-graph-dock {
-  --terrain-graph-height:38%;
+  --terrain-graph-height:44%;
   --terrain-inspector-width:272px;
   position:relative;
   flex:0 0 var(--terrain-graph-height);
-  min-height:280px;
+  min-height:320px;
   display:grid;
   grid-template-rows:42px minmax(0,1fr) 38px;
   border-top:1px solid #ffffff20;
@@ -204,13 +204,15 @@ button:disabled { opacity:.35; cursor:not-allowed; }
 .terrain-node-item[data-node-type^="transform/"] { border-left:3px solid #d3a54d; }
 .terrain-node-item[data-node-type^="combine/"] { border-left:3px solid #9b7fc7; }
 .terrain-node-item[data-node-type^="shape/"] { border-left:3px solid #d9825b; }
+.terrain-node-item[data-node-type^="material/"] { border-left:3px solid #d9825b; }
+.terrain-node-item[data-node-type^="mask/"] { border-left:3px solid #d3a54d; }
 .terrain-node-item[data-node-type^="world/"],
 .terrain-node-item[data-node-type^="input/"] { border-left:3px solid #4aa8c7; }
 .terrain-node-item[data-node-type^="terrain/"] { border-left:3px solid #4fd4bd; }
 .terrain-graph-canvas-wrap { position:relative; min-width:0; min-height:0; overflow:hidden; background:#0b1013; }
 .terrain-graph-canvas-wrap canvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
 .terrain-inspector-pane {
-  --terrain-selected-height:52%;
+  --terrain-selected-height:38%;
   min-width:0;
   min-height:0;
   display:flex;
@@ -314,7 +316,8 @@ button:disabled { opacity:.35; cursor:not-allowed; }
 .terrain-node-inspector-field { min-width:0; display:flex; flex-direction:column; gap:4px; }
 .terrain-node-inspector-field span,
 .terrain-node-inspector-toggle span { overflow:hidden; color:#91a4ad; font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
-.terrain-node-inspector-field input {
+.terrain-node-inspector-field input,
+.terrain-node-inspector-field select {
   min-width:0;
   width:100%;
   height:28px;
@@ -329,7 +332,19 @@ button:disabled { opacity:.35; cursor:not-allowed; }
   appearance:auto;
 }
 .terrain-node-inspector-field input[type="number"]::-webkit-inner-spin-button { opacity:1; cursor:ns-resize; }
-.terrain-node-inspector-field input:focus { border-color:var(--node-accent); }
+.terrain-node-inspector-field input:focus,
+.terrain-node-inspector-field select:focus { border-color:var(--node-accent); }
+.terrain-node-edit-pack {
+  width:calc(100% - 18px);
+  min-height:28px;
+  margin:0 9px 9px;
+  border:1px solid color-mix(in srgb,var(--node-accent) 55%,transparent);
+  border-radius:4px;
+  background:#20292e;
+  color:#dce9ed;
+  font-size:10px;
+  font-weight:700;
+}
 .terrain-node-inspector-toggle {
   grid-column:1/-1;
   min-height:28px;
@@ -365,6 +380,29 @@ button:disabled { opacity:.35; cursor:not-allowed; }
 .terrain-preview-heading span[data-state="success"] { color:#63d7a8; }
 .terrain-preview-heading span[data-state="error"] { color:#ff8b86; }
 .terrain-preview-heading span[data-state="loading"] { color:#77c7e0; }
+.terrain-preview-modes {
+  display:grid;
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:2px;
+  margin-bottom:6px;
+}
+.terrain-preview-modes button {
+  min-width:0;
+  min-height:24px;
+  overflow:hidden;
+  padding:3px 2px;
+  border:1px solid #ffffff13;
+  border-radius:3px;
+  background:#192126;
+  color:#81949d;
+  font-size:8px;
+  text-overflow:ellipsis;
+}
+.terrain-preview-modes button[aria-selected="true"] {
+  border-color:#55c99c7a;
+  background:#23654f;
+  color:#f0fff9;
+}
 .terrain-preview-canvas-wrap { position:relative; min-height:0; flex:1; }
 .terrain-preview-pane canvas {
   position:absolute;
@@ -377,6 +415,25 @@ button:disabled { opacity:.35; cursor:not-allowed; }
   border:1px solid #ffffff12;
   border-radius:4px;
   background:#071015;
+}
+.terrain-preview-legend {
+  min-height:22px;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  overflow-x:auto;
+  padding-top:5px;
+  color:#8fa2aa;
+  font-size:8px;
+  white-space:nowrap;
+}
+.terrain-preview-legend span { display:inline-flex; align-items:center; gap:3px; }
+.terrain-preview-legend i {
+  width:9px;
+  height:9px;
+  flex:0 0 9px;
+  border:1px solid #ffffff2b;
+  border-radius:2px;
 }
 .terrain-graph-canvas-wrap .graphdialog.terrain-number-dialog {
   z-index:20;

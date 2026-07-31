@@ -24,7 +24,11 @@ test('project serialization round-trips a detached terrain graph', () => {
   const project = TerrainSerializer.createProject({
     world,
     config,
-    generatorSettings: { seed: 81, terrainProgram: { instructions: ['transient'] } },
+    generatorSettings: {
+      seed: 81,
+      terrainProgram: { instructions: ['transient'] },
+      materialProgram: { packId: 'transient-pack' },
+    },
     streamingSettings: {},
     terrainGraph,
   });
@@ -32,6 +36,7 @@ test('project serialization round-trips a detached terrain graph', () => {
   assert.deepEqual(project.terrainGraph, terrainGraph);
   assert.notEqual(project.terrainGraph, terrainGraph);
   assert.equal('terrainProgram' in project.generatorSettings, false);
+  assert.equal('materialProgram' in project.generatorSettings, false);
 
   terrainGraph.nodes[0].position[0] = 9999;
   const result = TerrainSerializer.applyProject(project, { world, config });

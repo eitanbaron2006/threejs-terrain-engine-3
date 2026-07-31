@@ -11,6 +11,8 @@ const CATEGORY_COLORS = Object.freeze({
   Transform: ['#3c3527', '#d3a54d'],
   Combine: ['#352f45', '#9b7fc7'],
   Shape: ['#49342c', '#d9825b'],
+  Materials: ['#49342c', '#d9825b'],
+  Masks: ['#3c3527', '#d3a54d'],
   Output: ['#263d3a', '#4fd4bd'],
 });
 
@@ -80,6 +82,22 @@ export function registerTerrainNodeTypes(LiteGraph) {
       for (const input of definition.inputs) this.addInput(input.label, input.type);
       for (const socket of definition.outputs) this.addOutput(socket.label, socket.type);
       for (const [name, defaultValue] of Object.entries(definition.defaults)) {
+        const property = definition.properties?.[name];
+        if (property?.widget === 'combo') {
+          this.addWidget('combo', name, defaultValue, (value) => {
+            this.properties[name] = String(value);
+            this.graph?._terrainEditor?._scheduleCommit();
+          }, {
+            values: () => {
+              if (property.optionsSource === 'materialPacks') {
+                const catalog = this.graph?._terrainEditor?.materialPackCatalog ?? [];
+                return catalog.length ? catalog.map((item) => item.value) : [this.properties[name]];
+              }
+              return property.options ?? [this.properties[name]];
+            },
+          });
+          continue;
+        }
         if (typeof defaultValue === 'boolean') {
           this.addWidget('toggle', name, defaultValue, (value) => {
             this.properties[name] = Boolean(value);
@@ -92,8 +110,10 @@ export function registerTerrainNodeTypes(LiteGraph) {
             this.properties[name] = Number(value);
             this.graph?._terrainEditor?._scheduleCommit();
           }, {
-            step: PROPERTY_STEPS[name] ?? (Math.abs(defaultValue) < 0.01 ? 0.00001 : 0.1),
+            step: property?.step ?? PROPERTY_STEPS[name] ?? (Math.abs(defaultValue) < 0.01 ? 0.00001 : 0.1),
             precision: Math.abs(defaultValue) < 0.01 ? 5 : 3,
+            min: property?.min,
+            max: property?.max,
           });
         }
       }
@@ -117,6 +137,8 @@ export function registerTerrainNodeTypes(LiteGraph) {
   LiteGraph.link_type_colors.coordinate = '#4aa8c7';
   LiteGraph.link_type_colors.field = '#66c784';
   LiteGraph.link_type_colors.terrain = '#4fd4bd';
+  LiteGraph.link_type_colors.material = '#d9825b';
+  LiteGraph.link_type_colors.mask = '#d3a54d';
   LiteGraph.__terrainNodeTypesRegistered = true;
 }
 
@@ -250,7 +272,7 @@ export function setTerrainSidePanelVisibility(root, {
   if (widthResizeHandle) widthResizeHandle.hidden = !previewEnabled && !inspectorEnabled;
 }
 
-export function buildTerrainNodeInspectorModel(node) {
+export function buildTerrainNodeInspectorModel(node, optionSources = {}) {
   const definition = TERRAIN_NODE_DEFINITIONS[node?.type];
   if (!node || !definition) return null;
   return {
@@ -258,17 +280,33 @@ export function buildTerrainNodeInspectorModel(node) {
     title: definition.title,
     category: definition.category,
     accent: (CATEGORY_COLORS[definition.category] ?? CATEGORY_COLORS.Transform)[1],
-    fields: Object.entries(node.properties ?? {}).map(([name, value]) => ({
-      name,
-      label: name
-        .replace(/([A-Z])/g, ' $1')
-        .replace(/^./, (character) => character.toUpperCase()),
-      value,
-      type: typeof value === 'boolean' ? 'boolean' : typeof value,
-      step: typeof value === 'number'
-        ? PROPERTY_STEPS[name] ?? (Math.abs(value) < 0.01 ? 0.00001 : 0.1)
-        : null,
-    })),
+    canEditPack: node.type === 'material/pack',
+    fields: Object.entries(node.properties ?? {}).map(([name, value]) => {
+      const property = definition.properties?.[name] ?? null;
+      const sourceOptions = property?.optionsSource ? optionSources[property.optionsSource] : null;
+      const field = {
+        name,
+        label: property?.label ?? name
+          .replace(/([A-Z])/g, ' $1')
+          .replace(/^./, (character) => character.toUpperCase()),
+        value,
+        type: typeof value === 'boolean' ? 'boolean' : typeof value,
+        step: typeof value === 'number'
+          ? property?.step ?? PROPERTY_STEPS[name] ?? (Math.abs(value) < 0.01 ? 0.00001 : 0.1)
+          : null,
+      };
+      if (property) {
+        field.widget = property.widget ?? (typeof value === 'boolean' ? 'toggle' : 'number');
+        field.options = (sourceOptions ?? property.options ?? []).map((option) => (
+          typeof option === 'object'
+            ? { value: String(option.value), label: String(option.label ?? option.value) }
+            : { value: String(option), label: String(option) }
+        ));
+        field.min = property.min;
+        field.max = property.max;
+      }
+      return field;
+    }),
   };
 }
 
@@ -297,6 +335,7 @@ export class TerrainGraphEditor {
     onBuild = () => {},
     onPreviewToggle = () => {},
     onStatus = () => {},
+    onEditMaterialPack = () => {},
   }) {
     this.root = root;
     this.model = cloneTerrainGraph(graph);
@@ -304,6 +343,8 @@ export class TerrainGraphEditor {
     this.onBuild = onBuild;
     this.onPreviewToggle = onPreviewToggle;
     this.onStatus = onStatus;
+    this.onEditMaterialPack = onEditMaterialPack;
+    this.materialPackCatalog = [];
     this.history = [cloneTerrainGraph(graph)];
     this.historyIndex = 0;
     this.suppressChanges = false;
@@ -403,6 +444,10 @@ export class TerrainGraphEditor {
       this.canvas.setDirty(true, true);
       this.#renderSelectedNode(this.selectedNode);
     });
+    this.inspectorElement?.addEventListener('click', (event) => {
+      if (!event.target.closest?.('[data-node-action="edit-pack"]') || !this.selectedNode) return;
+      this.onEditMaterialPack(String(this.selectedNode.properties?.packId ?? ''));
+    });
     this.root.addEventListener('keydown', (event) => {
       if (!(event.ctrlKey || event.metaKey)) return;
       if (event.key.toLowerCase() === 'z') {
@@ -460,7 +505,7 @@ export class TerrainGraphEditor {
       event.preventDefault();
     };
     const resetSplit = () => {
-      sidePane.style.setProperty('--terrain-selected-height', '52%');
+      sidePane.style.setProperty('--terrain-selected-height', '38%');
       handle.removeAttribute('aria-valuenow');
     };
 
@@ -631,7 +676,9 @@ export class TerrainGraphEditor {
   #renderSelectedNode(node) {
     this.selectedNode = node;
     if (!this.inspectorElement) return;
-    const model = buildTerrainNodeInspectorModel(node);
+    const model = buildTerrainNodeInspectorModel(node, {
+      materialPacks: this.materialPackCatalog,
+    });
     if (!model) {
       this.inspectorElement.style.removeProperty('--node-accent');
       this.inspectorElement.innerHTML = '<div class="terrain-node-inspector-empty">No node selected</div>';
@@ -640,15 +687,41 @@ export class TerrainGraphEditor {
     this.inspectorElement.style.setProperty('--node-accent', model.accent);
     const fields = model.fields.length
       ? model.fields.map((field) => {
-        if (field.type === 'boolean') {
+        if (field.widget === 'toggle') {
           return `<label class="terrain-node-inspector-toggle"><span>${field.label}</span><input type="checkbox" data-node-property="${field.name}"${field.value ? ' checked' : ''}></label>`;
         }
-        return `<label class="terrain-node-inspector-field"><span>${field.label}</span><input type="number" data-node-property="${field.name}" value="${field.value}" step="${field.step}"></label>`;
+        if (field.widget === 'combo') {
+          return `<label class="terrain-node-inspector-field"><span>${field.label}</span><select data-node-property="${field.name}">${field.options.map((option) => `<option value="${this.#escapeHtml(option.value)}"${option.value === String(field.value) ? ' selected' : ''}>${this.#escapeHtml(option.label)}</option>`).join('')}</select></label>`;
+        }
+        return `<label class="terrain-node-inspector-field"><span>${field.label}</span><input type="number" data-node-property="${field.name}" value="${field.value}" step="${field.step}"${field.min == null ? '' : ` min="${field.min}"`}${field.max == null ? '' : ` max="${field.max}"`}></label>`;
       }).join('')
       : '<div class="terrain-node-inspector-empty">No editable parameters</div>';
     this.inspectorElement.innerHTML = `
       <header><span>${model.category}</span><b>${model.title}</b></header>
-      <div class="terrain-node-inspector-fields">${fields}</div>`;
+      <div class="terrain-node-inspector-fields">${fields}</div>
+      ${model.canEditPack ? '<button type="button" class="terrain-node-edit-pack" data-node-action="edit-pack">Edit Pack</button>' : ''}`;
+  }
+
+  #escapeHtml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+  }
+
+  setMaterialPackCatalog(catalog = []) {
+    this.materialPackCatalog = catalog.map((pack) => ({
+      value: String(pack.id ?? pack.value),
+      label: String(pack.name ?? pack.label ?? pack.id ?? pack.value),
+    }));
+    for (const node of this.graph?._nodes ?? []) {
+      if (node.type !== 'material/pack') continue;
+      const widget = node.widgets?.find((candidate) => candidate.name === 'packId');
+      if (widget) widget.options.values = () => this.materialPackCatalog.map((item) => item.value);
+    }
+    this.#renderSelectedNode(this.selectedNode);
+    this.canvas?.setDirty(true, true);
   }
 
   undo() {

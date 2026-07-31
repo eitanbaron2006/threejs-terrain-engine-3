@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { packControlWeights, smoothControlWeights, valueNoise2D, writeAutoWeights } from './noise.js';
+import { packControlWeights, smoothControlWeights, writeAutoWeights } from './noise.js';
+import { analyzeTerrainSurface } from './TerrainSurfaceAnalysis.js';
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -270,7 +271,7 @@ export class TerrainChunk {
     return true;
   }
 
-  recalculateControl(presetId, generatorSettings = {}) {
+  calculateAutoControlData(materialSelector, generatorSettings = {}) {
     const seed = Number.isFinite(Number(generatorSettings.seed)) ? Number(generatorSettings.seed) : 0;
     const rawControl = new Float32Array(this.vertexCount * 4);
     for (let z = 0; z < this.resolution; z += 1) {
@@ -281,38 +282,47 @@ export class TerrainChunk {
         const right = this.#getControlHeightAtGrid(x + 1, z);
         const down = this.#getControlHeightAtGrid(x, z - 1);
         const up = this.#getControlHeightAtGrid(x, z + 1);
-        const dx = (right - left) / Math.max(this.step * 2, 0.0001);
-        const dz = (up - down) / Math.max(this.step * 2, 0.0001);
-        const slope = Math.atan(Math.hypot(dx, dz)) * THREE.MathUtils.RAD2DEG;
         const world = this.sampleWorldPosition(x, z);
-        const broadVariation = valueNoise2D(world.x * 0.00145, world.z * 0.00145, seed + 557) * 0.5 + 0.5;
-        const detailVariation = valueNoise2D(world.x * 0.0075, world.z * 0.0075, seed + 991) * 0.5 + 0.5;
-        const variation = broadVariation * 0.72 + detailVariation * 0.28;
-        const averageNeighbor = (left + right + down + up) * 0.25;
-        const curvature = clamp((averageNeighbor - center) / Math.max(this.step * 1.8, 1.0), -1, 1);
-        const concavity = Math.max(0, curvature);
-        const convexity = Math.max(0, -curvature);
-        const slopeLength = Math.max(Math.hypot(dx, dz), 0.0001);
-        const northness = clamp(0.5 + (-dz / slopeLength) * 0.5, 0, 1);
-        const exposure = clamp(northness * 0.62 + convexity * 0.38, 0, 1);
-        const moistureNoise = valueNoise2D(world.x * 0.00085, world.z * 0.00085, seed + 1709) * 0.5 + 0.5;
-        const moisture = clamp(moistureNoise * 0.58 + concavity * 0.48 - convexity * 0.22 - exposure * 0.12, 0, 1);
-        const coast = clamp(1 - Math.abs(center - this.config.waterLevel) / 18, 0, 1);
-        const erosion = clamp(detailVariation * 0.48 + concavity * 0.34 + Math.min(1, slope / 58) * 0.18, 0, 1);
-        writeAutoWeights(rawControl, index * 4, center, slope, variation, presetId, 1, {
+        const surface = analyzeTerrainSurface({
+          center,
+          left,
+          right,
+          down,
+          up,
+          step: this.step,
+          worldX: world.x,
+          worldZ: world.z,
+          seed,
           waterLevel: this.config.waterLevel,
-          curvature,
-          moisture,
-          exposure,
-          coast,
-          erosion,
         });
+        writeAutoWeights(
+          rawControl,
+          index * 4,
+          center,
+          surface.slopeDegrees,
+          surface.variation,
+          materialSelector,
+          1,
+          surface,
+        );
       }
     }
     const smoothed = smoothControlWeights(rawControl, this.resolution, 2);
-    packControlWeights(smoothed, this.autoControlData);
+    return packControlWeights(smoothed);
+  }
+
+  applyAutoControlData(data) {
+    if (!(data instanceof Uint8Array) || data.length !== this.autoControlData.length) {
+      throw new TypeError('Automatic terrain control data must be a matching Uint8Array.');
+    }
+    this.autoControlData.set(data);
     for (let index = 0; index < this.vertexCount; index += 1) this.updateControlAt(index);
     this.controlMap.needsUpdate = true;
+  }
+
+  recalculateControl(materialSelector, generatorSettings = {}) {
+    const data = this.calculateAutoControlData(materialSelector, generatorSettings);
+    this.applyAutoControlData(data);
   }
 
 
@@ -349,7 +359,7 @@ export class TerrainChunk {
     this.updateControlAt(index);
   }
 
-  commitHeightChanges(presetId, generatorSettings = {}) {
+  commitHeightChanges(materialSelector, generatorSettings = {}) {
     this.minHeight = Infinity;
     this.maxHeight = -Infinity;
     for (const height of this.heights) {
@@ -358,7 +368,7 @@ export class TerrainChunk {
     }
     this.#syncCoreIntoPaddedHeightTexture();
     this.heightMap.needsUpdate = true;
-    this.recalculateControl(presetId, generatorSettings);
+    this.recalculateControl(materialSelector, generatorSettings);
     this.modified = true;
     this.updateBounds();
   }
@@ -396,7 +406,7 @@ export class TerrainChunk {
     };
   }
 
-  restoreState(state, presetId, generatorSettings = {}) {
+  restoreState(state, materialSelector, generatorSettings = {}) {
     this.heights.set(state.heights);
     this.#syncCoreIntoPaddedHeightTexture();
     this.controlData.set(state.controlData ?? this.controlData);
@@ -407,7 +417,7 @@ export class TerrainChunk {
     this.maxHeight = state.maxHeight ?? Math.max(...this.heights);
     this.heightMap.needsUpdate = true;
     this.controlMap.needsUpdate = true;
-    this.recalculateControl(presetId, generatorSettings);
+    this.recalculateControl(materialSelector, generatorSettings);
     this.modified = true;
     this.updateBounds();
   }

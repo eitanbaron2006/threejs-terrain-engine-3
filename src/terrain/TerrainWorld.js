@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TerrainChunk } from './TerrainChunk.js';
 import { TerrainLodGeometryCache } from './TerrainLodGeometry.js';
 import { createTerrainHeightSampler, valueNoise2D } from './noise.js';
+import { createTerrainMaterialProgramEvaluator } from './TerrainMaterialGraph.js';
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -9,6 +10,86 @@ function clamp(value, min, max) {
 
 function smoothstep(value) {
   return value * value * (3 - 2 * value);
+}
+
+function validateMaterialProgram(program) {
+  if (program === null) return;
+  if (!program || typeof program !== 'object' || Array.isArray(program)) {
+    throw new TypeError('Terrain material program must be an object.');
+  }
+  createTerrainMaterialProgramEvaluator(program);
+}
+
+function calculateMaterialControls(world, selector) {
+  const calculations = [];
+  for (const chunk of world.chunks.values()) {
+    calculations.push({
+      chunk,
+      data: chunk.calculateAutoControlData(selector, world.generatorSettings),
+      previousPresetId: chunk.presetId,
+      previousData: chunk.autoControlData?.slice() ?? null,
+    });
+  }
+  return calculations;
+}
+
+function commitMaterialChange(world, {
+  presetId,
+  materialDistribution,
+  materialProgram,
+  calculations,
+  event,
+}) {
+  const previous = {
+    presetId: world.presetId,
+    materialDistribution: world.materialDistribution,
+    materialProgram: world.materialProgram,
+    materialRevision: world.materialRevision,
+    cache: new Map(world.modifiedChunkCache),
+  };
+  const applied = [];
+  try {
+    world.materialRevision += 1;
+    world.presetId = presetId;
+    world.materialDistribution = materialDistribution;
+    world.materialProgram = materialProgram;
+    for (const calculation of calculations) {
+      calculation.chunk.presetId = presetId;
+      calculation.chunk.applyAutoControlData(calculation.data);
+      applied.push(calculation);
+    }
+    for (const { chunk } of calculations) {
+      if (chunk.modified) world.modifiedChunkCache.set(chunk.key, chunk.captureState());
+    }
+    world.eventBus.emit('terrain:preset', event);
+  } catch (error) {
+    world.presetId = previous.presetId;
+    world.materialDistribution = previous.materialDistribution;
+    world.materialProgram = previous.materialProgram;
+    world.materialRevision = previous.materialRevision;
+    world.modifiedChunkCache.clear();
+    for (const [key, state] of previous.cache) world.modifiedChunkCache.set(key, state);
+    for (const calculation of calculations) {
+      calculation.chunk.presetId = calculation.previousPresetId;
+    }
+    for (const calculation of applied) {
+      if (calculation.previousData) {
+        calculation.chunk.applyAutoControlData(calculation.previousData);
+      }
+    }
+    throw error;
+  }
+}
+
+function materialDistributionFromPack(pack, presetId) {
+  return {
+    id: presetId,
+    globalBlend: Number(pack.globalBlend ?? 1),
+    transitionNoise: Number(pack.transitionNoise ?? 0.2),
+    layers: pack.layers.map((layer) => ({
+      distribution: { ...(layer.distribution ?? {}) },
+    })),
+  };
 }
 
 export class TerrainWorld {
@@ -35,6 +116,8 @@ export class TerrainWorld {
     this.modifiedChunkCache = new Map();
     this.presetId = 'mediterranean';
     this.materialDistribution = null;
+    this.materialProgram = null;
+    this.materialRevision = 0;
     this.selectedChunk = null;
     this.activeRequests = 0;
     this.maxConcurrentRequests = Math.max(1, Number(generationService.concurrency ?? 1));
@@ -426,14 +509,21 @@ export class TerrainWorld {
   async #requestChunk(descriptor) {
     this.activeRequests += 1;
     const requestEpoch = this.epoch;
+    const requestMaterialRevision = this.materialRevision;
     const start = performance.now();
     const promise = this.modifiedChunkCache.has(descriptor.key)
       ? Promise.resolve(this.#generationFromState(descriptor, this.modifiedChunkCache.get(descriptor.key)))
-      : this.generationService.generateChunk(descriptor, this.config, this.generatorSettings, this.materialDistribution ?? this.presetId);
+      : this.generationService.generateChunk(
+        descriptor,
+        this.config,
+        this.generatorSettings,
+        this.getMaterialWeightSelector(),
+      );
     this.pending.set(descriptor.key, promise);
     try {
       const generation = await promise;
       if (requestEpoch !== this.epoch) return;
+      if (requestMaterialRevision !== this.materialRevision) return;
       if (!this.isChunkInsideWorld(descriptor.chunkX, descriptor.chunkZ)) return;
       const currentDistance = Math.hypot(
         descriptor.chunkX * this.config.chunkSize - this.lastTarget.x,
@@ -453,7 +543,13 @@ export class TerrainWorld {
       });
       chunk.presetId = this.presetId;
       const cached = this.modifiedChunkCache.get(descriptor.key);
-      if (cached) chunk.restoreState(cached, this.materialDistribution ?? this.presetId, this.generatorSettings);
+      if (cached) {
+        chunk.restoreState(
+          cached,
+          this.getMaterialWeightSelector(),
+          this.generatorSettings,
+        );
+      }
 
       const previous = this.chunks.get(chunk.key);
       if (previous?.modified) {
@@ -639,36 +735,61 @@ export class TerrainWorld {
     this.eventBus.emit('terrain:selection', { chunk });
   }
 
-  applyPreset(presetId) {
-    this.presetId = presetId;
-    this.materialDistribution = null;
-    for (const chunk of this.chunks.values()) {
-      chunk.presetId = presetId;
-      chunk.recalculateControl(presetId, this.generatorSettings);
-      if (chunk.modified) this.modifiedChunkCache.set(chunk.key, chunk.captureState());
-    }
-    this.eventBus.emit('terrain:preset', { presetId });
+  getMaterialWeightSelector() {
+    return this.materialProgram ?? this.materialDistribution ?? this.presetId;
   }
 
-  applyMaterialPackDistribution(pack) {
+  applyPreset(presetId, materialProgram = null) {
+    validateMaterialProgram(materialProgram);
+    const selector = materialProgram ?? presetId;
+    const calculations = calculateMaterialControls(this, selector);
+    commitMaterialChange(this, {
+      presetId,
+      materialDistribution: null,
+      materialProgram,
+      calculations,
+      event: { presetId },
+    });
+  }
+
+  applyMaterialPackDistribution(pack, materialProgram = null) {
+    validateMaterialProgram(materialProgram);
     const hasCustomDistribution = Array.isArray(pack?.layers) && pack.layers.some((layer) => layer?.distribution);
-    if (!hasCustomDistribution) {
-      this.applyPreset(pack?.splatPreset ?? 'mediterranean');
+    const presetId = hasCustomDistribution
+      ? String(pack.id ?? 'custom')
+      : String(pack?.splatPreset ?? 'mediterranean');
+    const materialDistribution = hasCustomDistribution
+      ? materialDistributionFromPack(pack, presetId)
+      : null;
+    const selector = materialProgram ?? materialDistribution ?? presetId;
+    const calculations = calculateMaterialControls(this, selector);
+    commitMaterialChange(this, {
+      presetId,
+      materialDistribution,
+      materialProgram,
+      calculations,
+      event: { presetId, custom: hasCustomDistribution },
+    });
+  }
+
+  applyMaterialProgram(program, pack = null) {
+    validateMaterialProgram(program);
+    if (pack) {
+      this.applyMaterialPackDistribution(pack, program);
       return;
     }
-    this.presetId = pack.id ?? 'custom';
-    this.materialDistribution = {
-      id: this.presetId,
-      globalBlend: Number(pack.globalBlend ?? 1),
-      transitionNoise: Number(pack.transitionNoise ?? 0.2),
-      layers: pack.layers.map((layer) => ({ distribution: { ...(layer.distribution ?? {}) } })),
-    };
-    for (const chunk of this.chunks.values()) {
-      chunk.presetId = this.presetId;
-      chunk.recalculateControl(this.materialDistribution, this.generatorSettings);
-      if (chunk.modified) this.modifiedChunkCache.set(chunk.key, chunk.captureState());
-    }
-    this.eventBus.emit('terrain:preset', { presetId: this.presetId, custom: true });
+    const presetId = String(program.packId ?? program.splatPreset ?? this.presetId);
+    const calculations = calculateMaterialControls(this, program);
+    commitMaterialChange(this, {
+      presetId,
+      materialDistribution: null,
+      materialProgram: program,
+      calculations,
+      event: {
+        presetId,
+        materialProgram: true,
+      },
+    });
   }
 
   applyBrush(point, brush, context = {}) {
@@ -755,7 +876,7 @@ export class TerrainWorld {
         chunk.modified = true;
         if (!context.deferCommit) {
           this.#refreshHeightHalosAround(chunk);
-          chunk.commitHeightChanges(this.materialDistribution ?? this.presetId, this.generatorSettings);
+          chunk.commitHeightChanges(this.getMaterialWeightSelector(), this.generatorSettings);
         }
       } else {
         chunk.commitMaterialChanges();
@@ -774,7 +895,9 @@ export class TerrainWorld {
       for (const chunk of changedChunks) this.#refreshHeightHalosAround(chunk);
     }
     for (const chunk of changedChunks) {
-      if (context.heightChanged) chunk.commitHeightChanges(this.materialDistribution ?? this.presetId, this.generatorSettings);
+      if (context.heightChanged) {
+        chunk.commitHeightChanges(this.getMaterialWeightSelector(), this.generatorSettings);
+      }
       else chunk.commitMaterialChanges();
       this.modifiedChunkCache.set(chunk.key, chunk.captureState());
       this.#syncDebugHelper(chunk);
@@ -817,7 +940,7 @@ export class TerrainWorld {
       });
       const chunk = this.chunks.get(item.key);
       if (chunk) {
-        chunk.restoreState(item, this.materialDistribution ?? this.presetId, this.generatorSettings);
+        chunk.restoreState(item, this.getMaterialWeightSelector(), this.generatorSettings);
         this.#refreshHeightHalosAround(chunk);
       }
     }

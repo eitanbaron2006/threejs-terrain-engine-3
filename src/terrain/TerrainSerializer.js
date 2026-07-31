@@ -63,6 +63,7 @@ export class TerrainSerializer {
   static createProject({ world, config, generatorSettings, streamingSettings, spawnPoint, materialSettings, waterSettings, environmentSettings, materialPackId, materialPackDefinition = null, terrainGraph = null }) {
     const savedGeneratorSettings = { ...generatorSettings };
     delete savedGeneratorSettings.terrainProgram;
+    delete savedGeneratorSettings.materialProgram;
     return {
       format: 'threejs-large-terrain-project',
       version: 3,
